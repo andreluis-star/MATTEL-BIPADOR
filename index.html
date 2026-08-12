@@ -357,7 +357,7 @@ function montarEsperadas(){
     const minuta = banco.minutas[it.nf] || '';
     const totalProd = Math.max(1, Math.floor(it.qtd));
     for(let vp=1; vp<=totalProd; vp++){
-      const bcVal = `${it.nf}${minuta}${it.cod}${String(vp).padStart(3,'0')}`;
+      const bcVal = normCode(`${it.nf}${minuta}${it.cod}${String(vp).padStart(3,'0')}`);
       esperadas.set(bcVal, { nf:it.nf, cod:it.cod, item:it.item, volProd:vp, totalProd });
     }
     const s = porSku.get(it.cod) || { total:0, feitos:0, item:it.item };
@@ -369,6 +369,10 @@ function montarEsperadas(){
   contagem = new Map();
   erros = [];
 }
+
+// Normalização única aplicada tanto às chaves esperadas quanto ao código lido,
+// para que a comparação nunca falhe por maiúsculas/minúsculas ou espaços.
+function normCode(s){ return String(s==null?'':s).trim().toUpperCase(); }
 
 // ── Áudio (Web Audio API — bip sintetizado, sem arquivos) ────────────────────
 let audioCtx = null;
@@ -390,23 +394,22 @@ function vibrar(ms){ if(navigator.vibrate) navigator.vibrate(ms); }
 
 // ── Fluxo de leitura ─────────────────────────────────────────────────────────
 function processarLeitura(raw){
-  const code = (raw||'').trim().toUpperCase();
+  const code = normCode(raw);
   if(!code) return;
 
   if(esperadas.has(code)){
     const jaFeito = (contagem.get(code)||0) >= 1;
     if(jaFeito){
       registrarFeedback('warn', 'JÁ CONFERIDO', esperadas.get(code), code);
-      somJa(); vibrar([40,60,40]); flash('err'); // usa flash de atenção
-      renderErroDup(code);
-      return;
+      somJa(); vibrar([40,60,40]); flash('err');
+    } else {
+      contagem.set(code, 1);
+      feitos++;
+      const info = esperadas.get(code);
+      const s = porSku.get(info.cod); if(s) s.feitos++;
+      registrarFeedback('ok', 'CONFERIDO', info, code);
+      somOk(); vibrar(30); flash('ok');
     }
-    contagem.set(code, 1);
-    feitos++;
-    const info = esperadas.get(code);
-    const s = porSku.get(info.cod); if(s) s.feitos++;
-    registrarFeedback('ok', 'CONFERIDO', info, code);
-    somOk(); vibrar(30); flash('ok');
   } else {
     // Não está na lista esperada. Descobre o porquê para orientar.
     const motivo = diagnosticar(code);
@@ -416,7 +419,6 @@ function processarLeitura(raw){
   }
   renderPlacar();
   renderLista();
-  $('scanField').value='';
 }
 
 // Tenta explicar por que um código não bate: SKU de outro processo, formato
@@ -427,7 +429,7 @@ function diagnosticar(code){
     const minuta = banco.minutas[it.nf] || '';
     const totalProd = Math.max(1, Math.floor(it.qtd));
     for(let vp=1; vp<=totalProd; vp++){
-      const bc = `${it.nf}${minuta}${it.cod}${String(vp).padStart(3,'0')}`;
+      const bc = normCode(`${it.nf}${minuta}${it.cod}${String(vp).padStart(3,'0')}`);
       if(bc===code){
         return `Volume da NF ${it.nf} (SKU ${it.cod}) — não pertence a este ${rotuloModo()}.`;
       }
@@ -604,15 +606,35 @@ document.querySelectorAll('.tab').forEach(t=>{
   });
 });
 
-// Leitor de código de barras USB/Bluetooth: "digita" o código e manda Enter.
+// ── Captura da leitura ───────────────────────────────────────────────────────
+// Um leitor de código de barras "digita" o código muito rápido e normalmente
+// termina com Enter. Para evitar disparo duplo (Enter + pausa) e códigos
+// grudados, centralizamos a leitura num único ponto que:
+//   1. lê o valor atual do campo,
+//   2. LIMPA o campo imediatamente (antes de processar),
+//   3. processa o código lido.
+let scanTimer = null;
+
+function lerCampo(){
+  const campo = $('scanField');
+  const valor = campo.value;      // captura
+  campo.value = '';               // limpa ANTES de processar (evita resíduo/concatenação)
+  clearTimeout(scanTimer);
+  const code = (valor||'').trim();
+  if(code.length >= 6) processarLeitura(code);
+}
+
+// Enter (fim de leitura da maioria dos leitores) → processa na hora.
 $('scanField').addEventListener('keydown', e=>{
-  if(e.key==='Enter'){ e.preventDefault(); processarLeitura($('scanField').value); }
+  if(e.key==='Enter'){ e.preventDefault(); lerCampo(); }
 });
-// Alguns leitores não mandam Enter — confirma após pausa na digitação.
-let scanTimer=null;
+
+// Leitores sem Enter: após uma pausa na "digitação", processa o que chegou.
+// O timer é sempre reiniciado a cada caractere, então só dispara quando o
+// leitor termina de mandar o código inteiro.
 $('scanField').addEventListener('input', ()=>{
   clearTimeout(scanTimer);
-  scanTimer = setTimeout(()=>{ if($('scanField').value.trim().length>=6) processarLeitura($('scanField').value); }, 120);
+  scanTimer = setTimeout(lerCampo, 140);
 });
 // Mantém o foco no campo durante a conferência (se o operador tocar fora)
 document.addEventListener('click', ()=>{ if($('board').classList.contains('on')) setTimeout(focarCampo, 50); });
