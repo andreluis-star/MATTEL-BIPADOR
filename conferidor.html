@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0b0f14">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>Conferidor de Volumes — Portoexpress</title>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   CONFERIDOR — instrumento de galpão. Prioridade: legibilidade brutal,
+   estados de cor inequívocos, alvos de toque grandes. Nada de sutileza.
+   Paleta: painel escuro (baixo brilho, bom para tela sempre ligada),
+   com dois estados que gritam — verde (ok) e vermelho (erro).
+   ───────────────────────────────────────────────────────────────────────── */
+:root{
+  --bg:#0b0f14; --panel:#141b24; --panel2:#1c2530; --line:#2a3644;
+  --ink:#eaf1f8; --dim:#7d8ea1;
+  --ok:#16b364; --ok-deep:#0c7a43;
+  --err:#f2323f; --err-deep:#a30d17;
+  --warn:#f5a524; --accent:#3d8bff;
+  --mono:'DIN Alternate','Roboto Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--ink);font-family:var(--sans);
+  overflow:hidden;position:fixed;inset:0;
+  display:flex;flex-direction:column;
+  user-select:none;-webkit-user-select:none;
+}
+
+/* Cabeçalho compacto */
+header{
+  background:var(--panel);border-bottom:1px solid var(--line);
+  padding:10px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0;
+}
+header .logo{
+  width:30px;height:30px;border-radius:8px;flex-shrink:0;
+  background:linear-gradient(135deg,var(--accent),#7c3aed);
+  display:flex;align-items:center;justify-content:center;font-size:16px;
+}
+header h1{font-size:14px;font-weight:800;letter-spacing:.3px;line-height:1}
+header h1 span{display:block;font-size:10px;font-weight:500;color:var(--dim);letter-spacing:.5px;margin-top:2px}
+.conn{margin-left:auto;font-size:10px;font-weight:700;padding:4px 9px;border-radius:20px;background:var(--panel2);color:var(--dim);white-space:nowrap}
+.conn.on{background:rgba(22,179,100,.15);color:var(--ok)}
+.conn.err{background:rgba(242,50,63,.15);color:var(--err)}
+
+/* Área de conteúdo rolável */
+main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px}
+
+/* ── SETUP: escolher o que conferir ── */
+.setup-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}
+.setup-card h2{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:12px}
+.mode-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
+.mode-btn{
+  background:var(--panel2);border:1.5px solid var(--line);color:var(--ink);
+  border-radius:10px;padding:12px 6px;font-size:13px;font-weight:700;
+  cursor:pointer;transition:.12s;
+}
+.mode-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+label.fld{display:block;font-size:11px;color:var(--dim);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+select.pick{
+  width:100%;background:var(--panel2);border:1.5px solid var(--line);color:var(--ink);
+  border-radius:10px;padding:14px 12px;font-size:16px;font-weight:600;
+  appearance:none;-webkit-appearance:none;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%237d8ea1' viewBox='0 0 16 16'><path d='M4 6l4 4 4-4'/></svg>");
+  background-repeat:no-repeat;background-position:right 14px center;
+}
+.big-btn{
+  width:100%;margin-top:14px;border:none;border-radius:12px;
+  padding:18px;font-size:17px;font-weight:800;letter-spacing:.3px;cursor:pointer;
+  background:var(--accent);color:#fff;
+}
+.big-btn:disabled{opacity:.4}
+.big-btn.ghost{background:var(--panel2);color:var(--ink);border:1.5px solid var(--line)}
+.hint{font-size:12px;color:var(--dim);margin-top:10px;line-height:1.5}
+
+/* ── CONFERÊNCIA: placar grande ── */
+.scoreboard{display:none;flex-direction:column;gap:12px}
+.scoreboard.on{display:flex}
+.target-bar{
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:10px 14px;display:flex;align-items:center;gap:10px;
+}
+.target-bar .t-lbl{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);font-weight:700}
+.target-bar .t-val{font-size:15px;font-weight:800;color:var(--ink)}
+.target-bar button{
+  margin-left:auto;background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+  border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;
+}
+
+/* Progresso — o número é o herói */
+.progress-card{
+  background:var(--panel);border:1px solid var(--line);border-radius:16px;
+  padding:22px 18px;text-align:center;position:relative;overflow:hidden;
+}
+.pc-counts{display:flex;align-items:flex-end;justify-content:center;gap:6px}
+.pc-done{font-family:var(--mono);font-size:76px;font-weight:800;line-height:.9;color:var(--ok)}
+.pc-sep{font-family:var(--mono);font-size:44px;font-weight:400;color:var(--dim);line-height:1;padding-bottom:4px}
+.pc-total{font-family:var(--mono);font-size:44px;font-weight:700;color:var(--ink);line-height:1;padding-bottom:4px}
+.pc-caption{font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--dim);margin-top:6px;font-weight:700}
+.pc-bar{height:8px;background:var(--panel2);border-radius:6px;margin-top:16px;overflow:hidden}
+.pc-bar-fill{height:100%;width:0;background:var(--ok);border-radius:6px;transition:width .25s}
+.pc-remaining{margin-top:12px;font-size:14px;font-weight:700}
+.pc-remaining b{font-family:var(--mono);font-size:20px;color:var(--warn)}
+.pc-remaining.done b{color:var(--ok)}
+
+/* Faixa de feedback da última leitura — muda de cor conforme o resultado */
+.feedback{
+  border-radius:14px;padding:16px 18px;min-height:92px;
+  display:flex;flex-direction:column;justify-content:center;gap:4px;
+  border:2px solid var(--line);background:var(--panel);
+  transition:background .1s,border-color .1s;
+}
+.feedback.ok{background:linear-gradient(180deg,rgba(22,179,100,.22),rgba(22,179,100,.08));border-color:var(--ok)}
+.feedback.err{background:linear-gradient(180deg,rgba(242,50,63,.24),rgba(242,50,63,.08));border-color:var(--err)}
+.feedback.warn{background:linear-gradient(180deg,rgba(245,165,36,.2),rgba(245,165,36,.06));border-color:var(--warn)}
+.fb-status{font-size:22px;font-weight:900;letter-spacing:.3px;display:flex;align-items:center;gap:8px}
+.feedback.ok .fb-status{color:var(--ok)}
+.feedback.err .fb-status{color:var(--err)}
+.feedback.warn .fb-status{color:var(--warn)}
+.fb-detail{font-size:14px;color:var(--ink);line-height:1.4}
+.fb-detail b{font-family:var(--mono)}
+.fb-idle{color:var(--dim);font-size:15px;font-weight:600;text-align:center}
+
+/* Campo de leitura — recebe o foco do leitor (que "digita" o código) */
+.scan-field{
+  width:100%;background:var(--panel2);border:2px solid var(--accent);
+  border-radius:12px;padding:16px;font-family:var(--mono);font-size:18px;
+  color:var(--ink);text-align:center;letter-spacing:1px;
+}
+.scan-field::placeholder{color:var(--dim);letter-spacing:.5px;font-family:var(--sans)}
+.scan-hint{display:flex;align-items:center;gap:8px;justify-content:center;font-size:12px;color:var(--dim);margin-top:8px}
+.pulse{width:9px;height:9px;border-radius:50%;background:var(--accent);animation:pulse 1.3s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* Lista de pendências / conferidos */
+.tabs{display:flex;gap:6px;margin-bottom:10px}
+.tab{
+  flex:1;background:var(--panel);border:1px solid var(--line);color:var(--dim);
+  border-radius:10px;padding:10px;font-size:12px;font-weight:700;text-align:center;cursor:pointer;
+  text-transform:uppercase;letter-spacing:.5px;
+}
+.tab.active{background:var(--panel2);color:var(--ink);border-color:var(--accent)}
+.tab .n{font-family:var(--mono);font-size:16px;display:block;margin-top:2px}
+.list{display:flex;flex-direction:column;gap:6px}
+.li{
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:11px 13px;display:flex;align-items:center;gap:10px;
+}
+.li .li-cod{font-family:var(--mono);font-weight:800;font-size:14px}
+.li .li-meta{font-size:11px;color:var(--dim)}
+.li .li-count{margin-left:auto;font-family:var(--mono);font-weight:700;font-size:14px}
+.li.full{opacity:.5}
+.li.full .li-count{color:var(--ok)}
+.li-empty{text-align:center;color:var(--dim);font-size:13px;padding:26px}
+
+/* Barra inferior de ações */
+.action-bar{
+  flex-shrink:0;background:var(--panel);border-top:1px solid var(--line);
+  padding:10px 14px;display:flex;gap:10px;
+  padding-bottom:calc(10px + env(safe-area-inset-bottom));
+}
+.action-bar button{
+  flex:1;border:none;border-radius:11px;padding:15px;font-size:14px;font-weight:800;cursor:pointer;
+}
+.ab-finish{background:var(--ok);color:#fff}
+.ab-reset{background:var(--panel2);color:var(--dim);border:1px solid var(--line)!important;flex:0 0 auto;padding-left:20px;padding-right:20px}
+
+/* Overlay flash de tela inteira no erro — impossível não ver */
+#flash{
+  position:fixed;inset:0;pointer-events:none;z-index:50;opacity:0;
+  transition:opacity .06s;
+}
+#flash.err{background:rgba(242,50,63,.55);opacity:1}
+#flash.ok{background:rgba(22,179,100,.4);opacity:1}
+
+.sound-toggle{
+  display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);
+  cursor:pointer;font-weight:600;
+}
+.sound-toggle input{width:18px;height:18px;accent-color:var(--accent)}
+</style>
+</head>
+<body>
+
+<div id="flash"></div>
+
+<header>
+  <div class="logo">📦</div>
+  <h1>Conferidor de Volumes<span>Portoexpress · Mattel</span></h1>
+  <div class="conn" id="conn">conectando…</div>
+</header>
+
+<main>
+  <!-- SETUP -->
+  <div id="setup">
+    <div class="setup-card">
+      <h2>1 · O que vamos conferir?</h2>
+      <div class="mode-row">
+        <button class="mode-btn active" data-mode="processo">Processo</button>
+        <button class="mode-btn" data-mode="minuta">Minuta</button>
+        <button class="mode-btn" data-mode="nota">Nota Fiscal</button>
+      </div>
+      <label class="fld" id="pickLbl">Escolha o processo</label>
+      <select class="pick" id="pick"><option>Carregando…</option></select>
+      <button class="big-btn" id="startBtn" disabled>Iniciar conferência</button>
+      <div class="hint" id="setupHint">Os dados vêm em tempo real do sistema. Assim que as etiquetas forem geradas lá, aparecem aqui.</div>
+    </div>
+
+    <div class="setup-card">
+      <h2>Conferência</h2>
+      <div class="hint">
+        Cada etiqueta impressa vira <b>um volume</b> a conferir. Use o leitor de código de barras
+        apontado para o código da etiqueta. A cada leitura, o placar atualiza e um som confirma:
+        <b style="color:var(--ok)">bip curto</b> = certo, <b style="color:var(--err)">bip grave duplo</b> = erro.
+      </div>
+      <label class="sound-toggle" style="margin-top:12px">
+        <input type="checkbox" id="soundOn" checked> Som de conferência ligado
+      </label>
+    </div>
+  </div>
+
+  <!-- CONFERÊNCIA -->
+  <div class="scoreboard" id="board">
+    <div class="target-bar">
+      <span class="t-lbl">Conferindo</span>
+      <span class="t-val" id="targetVal">—</span>
+      <button id="changeTarget">trocar</button>
+    </div>
+
+    <div class="progress-card">
+      <div class="pc-counts">
+        <span class="pc-done" id="scDone">0</span>
+        <span class="pc-sep">/</span>
+        <span class="pc-total" id="scTotal">0</span>
+      </div>
+      <div class="pc-caption">volumes conferidos</div>
+      <div class="pc-bar"><div class="pc-bar-fill" id="scBar"></div></div>
+      <div class="pc-remaining" id="scRemain">Faltam <b>0</b> volumes</div>
+    </div>
+
+    <div class="feedback" id="feedback">
+      <div class="fb-idle" id="fbIdle">Aguardando leitura…</div>
+    </div>
+
+    <input class="scan-field" id="scanField" inputmode="none"
+           placeholder="Bipe o código de barras aqui" autocomplete="off" autocorrect="off" spellcheck="false">
+    <div class="scan-hint"><span class="pulse"></span> Campo pronto — mantenha esta tela aberta durante a conferência</div>
+
+    <div class="tabs">
+      <div class="tab active" data-list="pend">Faltam<span class="n" id="tabPend">0</span></div>
+      <div class="tab" data-list="done">Conferidos<span class="n" id="tabDone">0</span></div>
+      <div class="tab" data-list="err">Erros<span class="n" id="tabErr">0</span></div>
+    </div>
+    <div class="list" id="list"></div>
+  </div>
+</main>
+
+<div class="action-bar" id="actionBar" style="display:none">
+  <button class="ab-reset" id="resetBtn">Zerar</button>
+  <button class="ab-finish" id="finishBtn">Finalizar</button>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// CONFERIDOR DE VOLUMES — módulo mobile independente
+// ---------------------------------------------------------------------------
+// Lê o MESMO Firebase do sistema principal (projeto cargas-mattel), reconstrói
+// as etiquetas esperadas com a MESMA fórmula de código de barras e confere cada
+// volume bipado. Feedback sonoro + visual (verde ok / vermelho erro).
+//
+// Fórmula do código de barras (idêntica ao gerador de etiquetas):
+//     NF + MINUTA + CÓDIGO + volProd(3 dígitos, zero à esquerda)
+// Cada item de NF gera floor(qtd) volumes (volProd de 1 até o total).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCSdcc_-NHMjIno3teJdFGJ6dSJR5bUqls",
+  authDomain: "cargas-mattel.firebaseapp.com",
+  databaseURL: "https://cargas-mattel-default-rtdb.firebaseio.com",
+  projectId: "cargas-mattel",
+  storageBucket: "cargas-mattel.firebasestorage.app",
+  messagingSenderId: "835464722375",
+  appId: "1:835464722375:web:d312edfda4c1e063e54be2"
+};
+const DB_PATH = 'cargas';
+
+const $ = id => document.getElementById(id);
+
+// Estado remoto (espelho do nó 'cargas' do Firebase)
+let remote = {};            // { 'notas-xml-data': {...}, 'processos-data': {...}, 'minutas-data': {...} }
+let banco = { items:[], meta:{}, minutas:{} };  // banco de notas (allItems etc.)
+let processos = {};         // { codigo: {codigo,dia,mes,ano,nfs:[]} }
+let minutas = {};           // { id: {id,nfs:[]} }
+
+// Estado da conferência
+let modo = 'processo';
+let alvo = null;            // codigo/minuta/nf selecionado
+let esperadas = new Map();  // bcVal -> { nf, cod, item, volProd, totalProd }
+let contagem = new Map();   // bcVal -> quantas vezes bipado (esperado 1)
+let porSku = new Map();     // cod -> { total, feitos, item }
+let erros = [];             // [{ raw, motivo, hora }]
+let feitos = 0, total = 0;
+
+// ── Firebase ───────────────────────────────────────────────────────────────
+function conectar(){
+  try{
+    firebase.initializeApp(FIREBASE_CONFIG);
+    const ref = firebase.database().ref(DB_PATH);
+    ref.on('value', snap=>{
+      remote = snap.val() || {};
+      hidratar();
+      setConn('on');
+      if(!alvo) preencherOpcoes(); // atualiza a lista de opções em tempo real
+    }, err=>{ setConn('err'); console.warn('Firebase:', err); });
+  }catch(e){ setConn('err'); console.warn(e); }
+}
+function setConn(state){
+  const el = $('conn');
+  el.className = 'conn' + (state==='on'?' on':state==='err'?' err':'');
+  el.textContent = state==='on' ? 'em tempo real' : state==='err' ? 'sem conexão' : 'conectando…';
+}
+
+// Converte o nó bruto do Firebase nas estruturas usadas aqui.
+function hidratar(){
+  const parse = k => { try{ return typeof remote[k]==='string' ? JSON.parse(remote[k]) : (remote[k]||null); }catch(e){ return null; } };
+  const db = parse('notas-xml-data') || {};
+  banco = { items: db.items||[], meta: db.meta||{}, minutas: db.minutas||{} };
+  processos = parse('processos-data') || {};
+  minutas   = parse('minutas-data')   || {};
+}
+
+// ── Montagem das etiquetas esperadas ────────────────────────────────────────
+// Reproduz a fórmula do gerador para as NFs do alvo escolhido.
+function nfsDoAlvo(){
+  if(modo==='processo'){ const p = processos[alvo]; return p ? [...p.nfs] : []; }
+  if(modo==='minuta'){ const m = minutas[alvo]; return m ? [...(m.nfs||[])] : []; }
+  if(modo==='nota'){ return [alvo]; }
+  return [];
+}
+
+function montarEsperadas(){
+  esperadas = new Map();
+  porSku = new Map();
+  const nfs = new Set(nfsDoAlvo());
+  const itens = banco.items.filter(i => nfs.has(i.nf));
+  for(const it of itens){
+    const minuta = banco.minutas[it.nf] || '';
+    const totalProd = Math.max(1, Math.floor(it.qtd));
+    for(let vp=1; vp<=totalProd; vp++){
+      const bcVal = `${it.nf}${minuta}${it.cod}${String(vp).padStart(3,'0')}`;
+      esperadas.set(bcVal, { nf:it.nf, cod:it.cod, item:it.item, volProd:vp, totalProd });
+    }
+    const s = porSku.get(it.cod) || { total:0, feitos:0, item:it.item };
+    s.total += totalProd;
+    porSku.set(it.cod, s);
+  }
+  total = esperadas.size;
+  feitos = 0;
+  contagem = new Map();
+  erros = [];
+}
+
+// ── Áudio (Web Audio API — bip sintetizado, sem arquivos) ────────────────────
+let audioCtx = null;
+function ensureAudio(){ if(!audioCtx){ try{ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } }
+function beep(freq, durMs, type='square', vol=0.25){
+  if(!$('soundOn').checked || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+  osc.type = type; osc.frequency.value = freq;
+  gain.gain.setValueAtTime(vol, t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + durMs/1000);
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.start(t); osc.stop(t + durMs/1000);
+}
+function somOk(){ beep(1180, 90, 'square', 0.22); }
+function somJa(){ beep(660, 130, 'sine', 0.22); }           // já conferido (aviso)
+function somErro(){ beep(200,180,'sawtooth',0.3); setTimeout(()=>beep(150,240,'sawtooth',0.3),150); }
+function vibrar(ms){ if(navigator.vibrate) navigator.vibrate(ms); }
+
+// ── Fluxo de leitura ─────────────────────────────────────────────────────────
+function processarLeitura(raw){
+  const code = (raw||'').trim().toUpperCase();
+  if(!code) return;
+
+  if(esperadas.has(code)){
+    const jaFeito = (contagem.get(code)||0) >= 1;
+    if(jaFeito){
+      registrarFeedback('warn', 'JÁ CONFERIDO', esperadas.get(code), code);
+      somJa(); vibrar([40,60,40]); flash('err'); // usa flash de atenção
+      renderErroDup(code);
+      return;
+    }
+    contagem.set(code, 1);
+    feitos++;
+    const info = esperadas.get(code);
+    const s = porSku.get(info.cod); if(s) s.feitos++;
+    registrarFeedback('ok', 'CONFERIDO', info, code);
+    somOk(); vibrar(30); flash('ok');
+  } else {
+    // Não está na lista esperada. Descobre o porquê para orientar.
+    const motivo = diagnosticar(code);
+    erros.push({ raw:code, motivo, hora:new Date() });
+    registrarFeedbackErro(motivo, code);
+    somErro(); vibrar([80,50,80,50,120]); flash('err');
+  }
+  renderPlacar();
+  renderLista();
+  $('scanField').value='';
+}
+
+// Tenta explicar por que um código não bate: SKU de outro processo, formato
+// inválido, ou simplesmente não pertence ao alvo.
+function diagnosticar(code){
+  // Está no banco geral (outro processo/minuta/nota)?
+  for(const it of banco.items){
+    const minuta = banco.minutas[it.nf] || '';
+    const totalProd = Math.max(1, Math.floor(it.qtd));
+    for(let vp=1; vp<=totalProd; vp++){
+      const bc = `${it.nf}${minuta}${it.cod}${String(vp).padStart(3,'0')}`;
+      if(bc===code){
+        return `Volume da NF ${it.nf} (SKU ${it.cod}) — não pertence a este ${rotuloModo()}.`;
+      }
+    }
+  }
+  if(!/^[0-9A-Z]+$/.test(code) || code.length < 6){
+    return 'Código não reconhecido. Verifique se bipou a etiqueta certa.';
+  }
+  return 'SKU/volume desconhecido — não existe em nenhuma etiqueta gerada.';
+}
+function rotuloModo(){ return modo==='processo'?'processo':modo==='minuta'?'minuta':'nota'; }
+
+// ── Feedback visual ──────────────────────────────────────────────────────────
+function registrarFeedback(cls, status, info, code){
+  const fb = $('feedback');
+  fb.className = 'feedback ' + cls;
+  fb.innerHTML = `
+    <div class="fb-status">${cls==='ok'?'✓':'⚠'} ${status}</div>
+    <div class="fb-detail">SKU <b>${esc(info.cod)}</b> · NF <b>${esc(info.nf)}</b> · volume <b>${info.volProd}/${info.totalProd}</b></div>`;
+}
+function registrarFeedbackErro(motivo, code){
+  const fb = $('feedback');
+  fb.className = 'feedback err';
+  fb.innerHTML = `
+    <div class="fb-status">✕ ERRO</div>
+    <div class="fb-detail">${esc(motivo)}<br><span style="color:var(--dim);font-size:12px">lido: <b>${esc(code)}</b></span></div>`;
+}
+function renderErroDup(code){ /* feedback já setado como warn em registrarFeedback */ }
+
+function flash(kind){
+  const f = $('flash'); f.className = kind;
+  setTimeout(()=>{ f.className=''; }, kind==='err'?260:150);
+}
+
+// ── Render ───────────────────────────────────────────────────────────────────
+function renderPlacar(){
+  $('scDone').textContent = feitos;
+  $('scTotal').textContent = total;
+  const pct = total ? Math.round(feitos/total*100) : 0;
+  $('scBar').style.width = pct + '%';
+  const rem = total - feitos;
+  const rEl = $('scRemain');
+  if(rem<=0 && total>0){
+    rEl.className = 'pc-remaining done';
+    rEl.innerHTML = `✓ <b>Conferência completa</b>`;
+    $('scBar').style.background = 'var(--ok)';
+  } else {
+    rEl.className = 'pc-remaining';
+    rEl.innerHTML = `Faltam <b>${rem}</b> volume${rem===1?'':'s'}`;
+  }
+  $('tabPend').textContent = Math.max(0, total-feitos);
+  $('tabDone').textContent = feitos;
+  $('tabErr').textContent = erros.length;
+}
+
+let listaAtiva = 'pend';
+function renderLista(){
+  const box = $('list');
+  if(listaAtiva==='err'){
+    if(!erros.length){ box.innerHTML = `<div class="li-empty">Nenhum erro até agora. 👍</div>`; return; }
+    box.innerHTML = erros.slice().reverse().map(e=>`
+      <div class="li" style="border-color:var(--err)">
+        <div>
+          <div class="li-cod" style="color:var(--err)">${esc(e.raw)}</div>
+          <div class="li-meta">${esc(e.motivo)}</div>
+        </div>
+        <div class="li-count" style="color:var(--dim)">${e.hora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
+      </div>`).join('');
+    return;
+  }
+  // pend/done: agrupa por SKU
+  const arr = [...porSku.entries()].sort((a,b)=>String(a[0]).localeCompare(String(b[0]),undefined,{numeric:true}));
+  const filtered = arr.filter(([cod,s])=> listaAtiva==='pend' ? s.feitos < s.total : s.feitos > 0);
+  if(!filtered.length){
+    box.innerHTML = `<div class="li-empty">${listaAtiva==='pend'?'Tudo conferido neste alvo. ✓':'Nada conferido ainda.'}</div>`;
+    return;
+  }
+  box.innerHTML = filtered.map(([cod,s])=>{
+    const full = s.feitos>=s.total;
+    return `<div class="li ${full?'full':''}">
+      <div>
+        <div class="li-cod">${esc(cod)}</div>
+        <div class="li-meta">${esc(s.item||'').slice(0,42)}</div>
+      </div>
+      <div class="li-count">${s.feitos}/${s.total}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Setup / navegação ────────────────────────────────────────────────────────
+function preencherOpcoes(){
+  const sel = $('pick');
+  let opts = [];
+  if(modo==='processo'){
+    opts = Object.values(processos)
+      .sort((a,b)=>(a.ano-b.ano)||(a.mes-b.mes)||(a.dia-b.dia)||String(a.codigo).localeCompare(String(b.codigo)))
+      .map(p=>({ v:p.codigo, t:`${p.codigo} · ${String(p.dia).padStart(2,'0')}/${String(p.mes).padStart(2,'0')} · ${p.nfs.length} NF` }));
+  } else if(modo==='minuta'){
+    opts = Object.values(minutas)
+      .sort((a,b)=>String(a.id).localeCompare(String(b.id),undefined,{numeric:true}))
+      .map(m=>({ v:m.id, t:`Minuta ${m.id} · ${(m.nfs||[]).length} NF` }));
+  } else {
+    const nfs = [...new Set(banco.items.map(i=>i.nf))].sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true}));
+    opts = nfs.map(nf=>({ v:nf, t:`NF ${nf}` }));
+  }
+  if(!opts.length){
+    sel.innerHTML = `<option value="">Nada disponível ainda</option>`;
+    $('startBtn').disabled = true;
+  } else {
+    sel.innerHTML = opts.map(o=>`<option value="${esc(o.v)}">${esc(o.t)}</option>`).join('');
+    $('startBtn').disabled = false;
+  }
+}
+
+function iniciar(){
+  ensureAudio();
+  alvo = $('pick').value;
+  if(!alvo) return;
+  montarEsperadas();
+  if(total===0){
+    alert('Este '+rotuloModo()+' não tem volumes com XML carregado ainda. Gere as etiquetas no sistema primeiro.');
+    return;
+  }
+  $('setup').style.display='none';
+  $('board').classList.add('on');
+  $('actionBar').style.display='flex';
+  $('targetVal').textContent = (modo==='processo'?'Processo ':modo==='minuta'?'Minuta ':'NF ') + alvo;
+  $('feedback').className='feedback';
+  $('feedback').innerHTML = `<div class="fb-idle">Aguardando leitura…</div>`;
+  renderPlacar(); renderLista();
+  focarCampo();
+}
+
+function voltarSetup(){
+  $('board').classList.remove('on');
+  $('actionBar').style.display='none';
+  $('setup').style.display='block';
+  alvo=null;
+  preencherOpcoes();
+}
+
+function focarCampo(){ const f=$('scanField'); if(f){ f.focus(); } }
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ── Eventos ──────────────────────────────────────────────────────────────────
+document.querySelectorAll('.mode-btn').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    document.querySelectorAll('.mode-btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    modo = b.dataset.mode;
+    $('pickLbl').textContent = modo==='processo'?'Escolha o processo':modo==='minuta'?'Escolha a minuta':'Escolha a nota fiscal';
+    preencherOpcoes();
+  });
+});
+
+$('startBtn').addEventListener('click', iniciar);
+$('changeTarget').addEventListener('click', ()=>{ if(confirm('Trocar o alvo? O progresso atual será perdido.')) voltarSetup(); });
+$('resetBtn').addEventListener('click', ()=>{ if(confirm('Zerar a contagem deste alvo?')){ montarEsperadas(); renderPlacar(); renderLista(); $('feedback').className='feedback'; $('feedback').innerHTML=`<div class="fb-idle">Aguardando leitura…</div>`; focarCampo(); } });
+$('finishBtn').addEventListener('click', ()=>{
+  const rem = total-feitos;
+  const msg = rem>0
+    ? `Ainda faltam ${rem} volume(s) e há ${erros.length} erro(s). Finalizar mesmo assim?`
+    : `Conferência completa! ${total} volumes, ${erros.length} erro(s). Finalizar?`;
+  if(confirm(msg)) voltarSetup();
+});
+
+document.querySelectorAll('.tab').forEach(t=>{
+  t.addEventListener('click', ()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    listaAtiva = t.dataset.list;
+    renderLista();
+  });
+});
+
+// Leitor de código de barras USB/Bluetooth: "digita" o código e manda Enter.
+$('scanField').addEventListener('keydown', e=>{
+  if(e.key==='Enter'){ e.preventDefault(); processarLeitura($('scanField').value); }
+});
+// Alguns leitores não mandam Enter — confirma após pausa na digitação.
+let scanTimer=null;
+$('scanField').addEventListener('input', ()=>{
+  clearTimeout(scanTimer);
+  scanTimer = setTimeout(()=>{ if($('scanField').value.trim().length>=6) processarLeitura($('scanField').value); }, 120);
+});
+// Mantém o foco no campo durante a conferência (se o operador tocar fora)
+document.addEventListener('click', ()=>{ if($('board').classList.contains('on')) setTimeout(focarCampo, 50); });
+
+// Início
+setConn('');
+conectar();
+</script>
+</body>
+</html>
