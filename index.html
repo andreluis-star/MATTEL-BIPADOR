@@ -844,7 +844,7 @@ async function exportarCompartilhar(){
 }
 
 // Enviar para a Planilha Google (via Apps Script — endpoint configurável).
-const SHEET_ENDPOINT = https://script.google.com/macros/s/AKfycbzC40nuyfKjA3Nlf9XoN5l7uHsIG0QYNGLZrnTkOzI4QPkP25NsgrT6s-JugKz3eiYK/exec'; // 
+const SHEET_ENDPOINT = 'https://script.google.com/macros/s/AKfycbzC40nuyfKjA3Nlf9XoN5l7uHsIG0QYNGLZrnTkOzI4QPkP25NsgrT6s-JugKz3eiYK/exec';
 async function exportarPlanilha(){
   const msg = $('sheetMsg');
   if(!SHEET_ENDPOINT){
