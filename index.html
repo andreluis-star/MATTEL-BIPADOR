@@ -173,6 +173,8 @@ select.pick{
   flex:1;border:none;border-radius:11px;padding:15px;font-size:14px;font-weight:800;cursor:pointer;
 }
 .ab-finish{background:var(--ok);color:#fff}
+.ab-pause{background:var(--warn);color:#1a1200;flex:0 0 auto;padding-left:18px;padding-right:18px}
+.ab-pause.paused{background:var(--accent);color:#fff}
 .ab-reset{background:var(--panel2);color:var(--dim);border:1px solid var(--line)!important;flex:0 0 auto;padding-left:20px;padding-right:20px}
 
 /* Overlay flash de tela inteira no erro — impossível não ver */
@@ -182,6 +184,36 @@ select.pick{
 }
 #flash.err{background:rgba(242,50,63,.55);opacity:1}
 #flash.ok{background:rgba(22,179,100,.4);opacity:1}
+
+/* Modal de erro — cobre tudo, alto contraste, impossível ignorar */
+.err-modal{
+  position:fixed;inset:0;z-index:100;display:none;
+  align-items:center;justify-content:center;padding:22px;
+  background:rgba(120,8,14,.78);backdrop-filter:blur(3px);
+  animation:errPulse 1s infinite;
+}
+.err-modal.on{display:flex}
+@keyframes errPulse{0%,100%{background:rgba(120,8,14,.78)}50%{background:rgba(163,13,23,.9)}}
+.err-box{
+  background:var(--panel);border:3px solid var(--err);border-radius:18px;
+  padding:26px 22px;max-width:440px;width:100%;text-align:center;
+  box-shadow:0 20px 60px rgba(0,0,0,.6);
+}
+.err-icon{font-size:56px;line-height:1}
+.err-title{font-size:24px;font-weight:900;color:var(--err);letter-spacing:.5px;margin:10px 0 14px}
+.err-body{font-size:15px;color:var(--ink);line-height:1.55;text-align:left;background:var(--panel2);border-radius:12px;padding:14px 16px;margin-bottom:20px}
+.err-body .eb-row{display:flex;gap:8px;margin-bottom:6px}
+.err-body .eb-row:last-child{margin-bottom:0}
+.err-body .eb-k{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.5px;flex:0 0 96px;padding-top:2px}
+.err-body .eb-v{font-weight:700;flex:1}
+.err-body .eb-v b{font-family:var(--mono)}
+.err-body .eb-motivo{color:var(--warn);font-weight:700;margin-bottom:12px;font-size:15px}
+.err-body .eb-lido{font-family:var(--mono);font-size:13px;color:var(--dim);word-break:break-all}
+.err-ok{
+  width:100%;background:var(--err);color:#fff;border:none;border-radius:12px;
+  padding:18px;font-size:18px;font-weight:800;cursor:pointer;letter-spacing:.3px;
+}
+.err-ok:active{background:var(--err-deep)}
 
 .sound-toggle{
   display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);
@@ -193,6 +225,16 @@ select.pick{
 <body>
 
 <div id="flash"></div>
+
+<!-- Pop-up modal de ERRO — bloqueia a tela até apertar OK -->
+<div id="errModal" class="err-modal">
+  <div class="err-box">
+    <div class="err-icon">⛔</div>
+    <div class="err-title">ITEM NÃO CONFERE</div>
+    <div class="err-body" id="errBody"></div>
+    <button class="err-ok" id="errOkBtn">OK — entendi</button>
+  </div>
+</div>
 
 <header>
   <div class="logo">📦</div>
@@ -263,10 +305,31 @@ select.pick{
     </div>
     <div class="list" id="list"></div>
   </div>
+
+  <!-- CONCLUSÃO — resumo + exportação -->
+  <div id="conclusao" style="display:none">
+    <div class="setup-card">
+      <h2 id="concTitulo">Conferência finalizada</h2>
+      <div id="concResumo"></div>
+    </div>
+    <div class="setup-card">
+      <h2>Exportar relação de bipados</h2>
+      <div class="hint" style="margin-bottom:12px">Relação detalhada — cada volume conferido, com horário.</div>
+      <button class="big-btn" id="expShareBtn">📲 Compartilhar arquivo (WhatsApp…)</button>
+      <button class="big-btn ghost" id="expPdfBtn">📄 Salvar PDF</button>
+      <button class="big-btn ghost" id="expTxtBtn">📝 Salvar TXT</button>
+      <button class="big-btn ghost" id="expSheetBtn">📊 Enviar para a Planilha Google</button>
+      <div class="hint" id="sheetMsg" style="margin-top:10px"></div>
+    </div>
+    <div class="setup-card">
+      <button class="big-btn" id="concVoltarBtn">Voltar ao início</button>
+    </div>
+  </div>
 </main>
 
 <div class="action-bar" id="actionBar" style="display:none">
   <button class="ab-reset" id="resetBtn">Zerar</button>
+  <button class="ab-pause" id="pauseBtn">⏸ Pausar</button>
   <button class="ab-finish" id="finishBtn">Finalizar</button>
 </div>
 
@@ -309,7 +372,9 @@ let esperadas = new Map();  // bcVal -> { nf, cod, item, volProd, totalProd }
 let contagem = new Map();   // bcVal -> quantas vezes bipado (esperado 1)
 let porSku = new Map();     // cod -> { total, feitos, item }
 let erros = [];             // [{ raw, motivo, hora }]
+let bipados = [];           // [{ code, nf, cod, item, volProd, totalProd, hora }] — log detalhado
 let feitos = 0, total = 0;
+let leituraPausada = false;   // trava a leitura (modal de erro aberto OU pausa manual)
 
 // ── Firebase ───────────────────────────────────────────────────────────────
 function conectar(){
@@ -368,6 +433,7 @@ function montarEsperadas(){
   feitos = 0;
   contagem = new Map();
   erros = [];
+  bipados = [];
 }
 
 // Normalização única aplicada tanto às chaves esperadas quanto ao código lido,
@@ -394,6 +460,7 @@ function vibrar(ms){ if(navigator.vibrate) navigator.vibrate(ms); }
 
 // ── Fluxo de leitura ─────────────────────────────────────────────────────────
 function processarLeitura(raw){
+  if(leituraPausada) return;   // modal de erro aberto ou leitura em pausa
   const code = normCode(raw);
   if(!code) return;
 
@@ -407,22 +474,25 @@ function processarLeitura(raw){
       feitos++;
       const info = esperadas.get(code);
       const s = porSku.get(info.cod); if(s) s.feitos++;
+      bipados.push({ code, nf:info.nf, cod:info.cod, item:info.item, volProd:info.volProd, totalProd:info.totalProd, hora:new Date() });
       registrarFeedback('ok', 'CONFERIDO', info, code);
       somOk(); vibrar(30); flash('ok');
     }
   } else {
-    // Não está na lista esperada. Descobre o porquê para orientar.
-    const motivo = diagnosticar(code);
-    erros.push({ raw:code, motivo, hora:new Date() });
-    registrarFeedbackErro(motivo, code);
-    somErro(); vibrar([80,50,80,50,120]); flash('err');
+    // Não está na lista esperada. Descobre o porquê e DE ONDE é o item.
+    const diag = diagnosticar(code);
+    erros.push({ raw:code, motivo:diag.motivo, hora:new Date() });
+    registrarFeedbackErro(diag.motivo, code);
+    flash('err');
+    abrirModalErro(code, diag);   // bloqueia a tela até apertar OK (com som repetindo)
   }
   renderPlacar();
   renderLista();
 }
 
-// Tenta explicar por que um código não bate: SKU de outro processo, formato
-// inválido, ou simplesmente não pertence ao alvo.
+// Tenta explicar por que um código não bate e DE ONDE o item é. Retorna
+// { motivo, origem } — origem tem os dados da NF/SKU quando o código é
+// reconhecido em outro processo/minuta/nota.
 function diagnosticar(code){
   // Está no banco geral (outro processo/minuta/nota)?
   for(const it of banco.items){
@@ -431,14 +501,19 @@ function diagnosticar(code){
     for(let vp=1; vp<=totalProd; vp++){
       const bc = normCode(`${it.nf}${minuta}${it.cod}${String(vp).padStart(3,'0')}`);
       if(bc===code){
-        return `Volume da NF ${it.nf} (SKU ${it.cod}) — não pertence a este ${rotuloModo()}.`;
+        // Descobre a que processo(s) essa NF pertence
+        const procsDaNf = Object.values(processos).filter(p=>(p.nfs||[]).includes(it.nf)).map(p=>p.codigo);
+        return {
+          motivo: `Este volume é da NF ${it.nf} e NÃO pertence a este ${rotuloModo()}.`,
+          origem: { nf:it.nf, cod:it.cod, item:it.item, volProd:vp, totalProd, minuta, processos:procsDaNf }
+        };
       }
     }
   }
   if(!/^[0-9A-Z]+$/.test(code) || code.length < 6){
-    return 'Código não reconhecido. Verifique se bipou a etiqueta certa.';
+    return { motivo:'Código não reconhecido. Verifique se bipou a etiqueta certa.', origem:null };
   }
-  return 'SKU/volume desconhecido — não existe em nenhuma etiqueta gerada.';
+  return { motivo:'SKU/volume desconhecido — não existe em nenhuma etiqueta gerada no sistema.', origem:null };
 }
 function rotuloModo(){ return modo==='processo'?'processo':modo==='minuta'?'minuta':'nota'; }
 
@@ -462,6 +537,43 @@ function renderErroDup(code){ /* feedback já setado como warn em registrarFeedb
 function flash(kind){
   const f = $('flash'); f.className = kind;
   setTimeout(()=>{ f.className=''; }, kind==='err'?260:150);
+}
+
+// ── Modal de erro bloqueante ─────────────────────────────────────────────────
+let errModalSoundTimer = null;
+
+function abrirModalErro(code, diag){
+  const body = $('errBody');
+  let html = `<div class="eb-motivo">${esc(diag.motivo)}</div>`;
+  if(diag.origem){
+    const o = diag.origem;
+    const procTxt = (o.processos && o.processos.length) ? o.processos.join(', ') : '— (sem processo vinculado)';
+    html += `
+      <div class="eb-row"><span class="eb-k">Nota fiscal</span><span class="eb-v"><b>${esc(o.nf)}</b></span></div>
+      <div class="eb-row"><span class="eb-k">SKU</span><span class="eb-v"><b>${esc(o.cod)}</b></span></div>
+      ${o.item?`<div class="eb-row"><span class="eb-k">Descrição</span><span class="eb-v">${esc(o.item)}</span></div>`:''}
+      <div class="eb-row"><span class="eb-k">Volume</span><span class="eb-v"><b>${o.volProd}/${o.totalProd}</b></span></div>
+      ${o.minuta?`<div class="eb-row"><span class="eb-k">Minuta</span><span class="eb-v"><b>${esc(o.minuta)}</b></span></div>`:''}
+      <div class="eb-row"><span class="eb-k">Processo(s)</span><span class="eb-v"><b>${esc(procTxt)}</b></span></div>`;
+  }
+  html += `<div class="eb-row" style="margin-top:10px"><span class="eb-k">Código lido</span><span class="eb-v eb-lido">${esc(code)}</span></div>`;
+  body.innerHTML = html;
+
+  $('errModal').classList.add('on');
+  leituraPausada = true;                 // trava novas leituras até o OK
+  // som de erro repetindo enquanto o modal estiver aberto
+  somErro();
+  vibrar([80,50,80,50,120]);
+  clearInterval(errModalSoundTimer);
+  errModalSoundTimer = setInterval(()=>{ somErro(); vibrar(120); }, 1100);
+}
+
+function fecharModalErro(){
+  $('errModal').classList.remove('on');
+  clearInterval(errModalSoundTimer); errModalSoundTimer = null;
+  leituraPausada = false;
+  const campo = $('scanField'); if(campo){ campo.value=''; }
+  focarCampo();
 }
 
 // ── Render ───────────────────────────────────────────────────────────────────
@@ -523,17 +635,20 @@ function renderLista(){
 function preencherOpcoes(){
   const sel = $('pick');
   let opts = [];
+  // marca ✓ nos que já foram conferidos neste aparelho
+  const selo = (mo,id)=>{ const c = statusConferido(mo,id); return c ? `✓ ` : ''; };
+  const seloFim = (mo,id)=>{ const c = statusConferido(mo,id); return c ? ` — CONFERIDO` : ''; };
   if(modo==='processo'){
     opts = Object.values(processos)
       .sort((a,b)=>(a.ano-b.ano)||(a.mes-b.mes)||(a.dia-b.dia)||String(a.codigo).localeCompare(String(b.codigo)))
-      .map(p=>({ v:p.codigo, t:`${p.codigo} · ${String(p.dia).padStart(2,'0')}/${String(p.mes).padStart(2,'0')} · ${p.nfs.length} NF` }));
+      .map(p=>({ v:p.codigo, t:`${selo('processo',p.codigo)}${p.codigo} · ${String(p.dia).padStart(2,'0')}/${String(p.mes).padStart(2,'0')} · ${p.nfs.length} NF${seloFim('processo',p.codigo)}` }));
   } else if(modo==='minuta'){
     opts = Object.values(minutas)
       .sort((a,b)=>String(a.id).localeCompare(String(b.id),undefined,{numeric:true}))
-      .map(m=>({ v:m.id, t:`Minuta ${m.id} · ${(m.nfs||[]).length} NF` }));
+      .map(m=>({ v:m.id, t:`${selo('minuta',m.id)}Minuta ${m.id} · ${(m.nfs||[]).length} NF${seloFim('minuta',m.id)}` }));
   } else {
     const nfs = [...new Set(banco.items.map(i=>i.nf))].sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true}));
-    opts = nfs.map(nf=>({ v:nf, t:`NF ${nf}` }));
+    opts = nfs.map(nf=>({ v:nf, t:`${selo('nota',nf)}NF ${nf}${seloFim('nota',nf)}` }));
   }
   if(!opts.length){
     sel.innerHTML = `<option value="">Nada disponível ainda</option>`;
@@ -565,8 +680,11 @@ function iniciar(){
 
 function voltarSetup(){
   $('board').classList.remove('on');
+  $('conclusao').style.display='none';
   $('actionBar').style.display='none';
   $('setup').style.display='block';
+  leituraPausada=false;
+  const pb=$('pauseBtn'); if(pb){ pb.textContent='⏸ Pausar'; pb.classList.remove('paused'); }
   alvo=null;
   preencherOpcoes();
 }
@@ -574,6 +692,184 @@ function voltarSetup(){
 function focarCampo(){ const f=$('scanField'); if(f){ f.focus(); } }
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ── Registro local dos alvos já conferidos (persiste só neste aparelho) ──────
+const CONF_KEY = 'conferidos-mattel-v1';
+function lerConferidos(){
+  try{ return JSON.parse(localStorage.getItem(CONF_KEY)) || {}; }catch(e){ return {}; }
+}
+function marcarConferido(mo, alvoId, resumo){
+  const all = lerConferidos();
+  all[mo+':'+alvoId] = { modo:mo, alvo:alvoId, quando:new Date().toISOString(), ...resumo };
+  try{ localStorage.setItem(CONF_KEY, JSON.stringify(all)); }catch(e){}
+}
+function statusConferido(mo, alvoId){ return lerConferidos()[mo+':'+alvoId] || null; }
+
+// ── Conclusão + exportação ───────────────────────────────────────────────────
+function alvoLabel(){
+  return (modo==='processo'?'Processo ':modo==='minuta'?'Minuta ':'NF ') + alvo;
+}
+function abrirConclusao(){
+  leituraPausada = true;
+  $('board').classList.remove('on');
+  $('actionBar').style.display='none';
+  $('conclusao').style.display='block';
+  const rem = total-feitos;
+  $('concTitulo').textContent = rem<=0 ? '✓ Conferência completa' : 'Conferência finalizada';
+  $('concResumo').innerHTML = `
+    <div class="eb-row"><span class="eb-k">Alvo</span><span class="eb-v"><b>${esc(alvoLabel())}</b></span></div>
+    <div class="eb-row"><span class="eb-k">Conferidos</span><span class="eb-v"><b>${feitos}/${total}</b></span></div>
+    <div class="eb-row"><span class="eb-k">Faltantes</span><span class="eb-v"><b>${rem}</b></span></div>
+    <div class="eb-row"><span class="eb-k">Erros</span><span class="eb-v"><b>${erros.length}</b></span></div>`;
+  $('sheetMsg').textContent = '';
+}
+
+// Nome-base do arquivo, ex.: conferencia_Processo-202607_2026-08-12_1530
+function nomeArquivo(){
+  const d = new Date();
+  const ts = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+'_'+String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0');
+  return `conferencia_${modo}-${String(alvo).replace(/\W/g,'')}_${ts}`;
+}
+
+// Monta as linhas detalhadas: cada volume bipado com horário.
+function linhasDetalhadas(){
+  return bipados.map((b,i)=>({
+    seq: i+1,
+    hora: b.hora.toLocaleString('pt-BR'),
+    nf: b.nf, sku: b.cod, item: b.item||'',
+    volume: `${b.volProd}/${b.totalProd}`,
+    codigo: b.code
+  }));
+}
+
+function cabecalhoTexto(){
+  const rem = total-feitos;
+  return [
+    `CONFERÊNCIA DE VOLUMES — PORTOEXPRESS / MATTEL`,
+    `Alvo: ${alvoLabel()}`,
+    `Data: ${new Date().toLocaleString('pt-BR')}`,
+    `Conferidos: ${feitos}/${total}  |  Faltantes: ${rem}  |  Erros: ${erros.length}`,
+    `${'='.repeat(48)}`
+  ].join('\n');
+}
+
+// TXT detalhado
+function montarTXT(){
+  let txt = cabecalhoTexto() + '\n\nVOLUMES CONFERIDOS (na ordem de leitura):\n';
+  linhasDetalhadas().forEach(l=>{
+    txt += `${String(l.seq).padStart(3,'0')} | ${l.hora} | NF ${l.nf} | SKU ${l.sku} | vol ${l.volume} | ${l.codigo}\n`;
+  });
+  if(erros.length){
+    txt += `\nERROS / DIVERGÊNCIAS:\n`;
+    erros.forEach((e,i)=>{ txt += `${String(i+1).padStart(3,'0')} | ${e.hora.toLocaleString('pt-BR')} | ${e.raw} | ${e.motivo}\n`; });
+  }
+  // faltantes por SKU
+  const faltam = [...porSku.entries()].filter(([c,s])=>s.feitos<s.total);
+  if(faltam.length){
+    txt += `\nFALTAM CONFERIR (por SKU):\n`;
+    faltam.forEach(([c,s])=>{ txt += `${c}: faltam ${s.total-s.feitos} de ${s.total}\n`; });
+  }
+  return txt;
+}
+
+function baixarBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+}
+
+function exportarTXT(){
+  const blob = new Blob([montarTXT()], { type:'text/plain;charset=utf-8' });
+  baixarBlob(blob, nomeArquivo()+'.txt');
+}
+
+// PDF: gera um HTML simples e usa a impressão do navegador (Salvar como PDF).
+function montarHTMLtabela(){
+  const rem = total-feitos;
+  const linhas = linhasDetalhadas().map(l=>`
+    <tr><td>${l.seq}</td><td>${esc(l.hora)}</td><td>${esc(l.nf)}</td><td>${esc(l.sku)}</td><td>${esc(l.item)}</td><td>${esc(l.volume)}</td><td class="mono">${esc(l.codigo)}</td></tr>`).join('');
+  const errosHtml = erros.length ? `
+    <h3>Erros / divergências (${erros.length})</h3>
+    <table><thead><tr><th>#</th><th>Hora</th><th>Código lido</th><th>Motivo</th></tr></thead><tbody>
+    ${erros.map((e,i)=>`<tr><td>${i+1}</td><td>${esc(e.hora.toLocaleString('pt-BR'))}</td><td class="mono">${esc(e.raw)}</td><td>${esc(e.motivo)}</td></tr>`).join('')}
+    </tbody></table>` : '';
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
+    <title>${nomeArquivo()}</title>
+    <style>
+      body{font-family:Arial,sans-serif;color:#111;padding:20px;font-size:12px}
+      h1{font-size:17px;margin:0 0 4px} h2{font-size:13px;color:#444;margin:2px 0}
+      h3{font-size:14px;margin:18px 0 6px}
+      table{width:100%;border-collapse:collapse;margin-top:8px}
+      th,td{border:1px solid #999;padding:4px 6px;text-align:left}
+      th{background:#eee;font-size:10px;text-transform:uppercase}
+      .mono{font-family:'Courier New',monospace}
+      .sum{margin:8px 0;padding:8px 10px;background:#f3f5f8;border-radius:6px;font-weight:bold}
+    </style></head><body>
+    <h1>Conferência de Volumes — Portoexpress / Mattel</h1>
+    <h2>Alvo: ${esc(alvoLabel())}</h2>
+    <h2>Data: ${new Date().toLocaleString('pt-BR')}</h2>
+    <div class="sum">Conferidos: ${feitos}/${total} &nbsp;·&nbsp; Faltantes: ${rem} &nbsp;·&nbsp; Erros: ${erros.length}</div>
+    <h3>Volumes conferidos (${bipados.length})</h3>
+    <table><thead><tr><th>#</th><th>Hora</th><th>NF</th><th>SKU</th><th>Descrição</th><th>Vol.</th><th>Código</th></tr></thead>
+    <tbody>${linhas}</tbody></table>
+    ${errosHtml}
+    </body></html>`;
+}
+function exportarPDF(){
+  const w = window.open('', '_blank');
+  if(!w){ alert('Permita pop-ups para gerar o PDF.'); return; }
+  w.document.write(montarHTMLtabela());
+  w.document.close();
+  setTimeout(()=>{ w.focus(); w.print(); }, 400);
+}
+
+// Compartilhar arquivo pelo menu nativo (Web Share API nível arquivo).
+async function exportarCompartilhar(){
+  const txt = montarTXT();
+  const file = new File([txt], nomeArquivo()+'.txt', { type:'text/plain' });
+  if(navigator.canShare && navigator.canShare({ files:[file] })){
+    try{
+      await navigator.share({ files:[file], title:'Conferência de Volumes', text:`Conferência ${alvoLabel()} — ${feitos}/${total} volumes` });
+    }catch(e){ /* usuário cancelou */ }
+  } else if(navigator.share){
+    // fallback: compartilha como texto se o aparelho não aceitar arquivo
+    try{ await navigator.share({ title:'Conferência de Volumes', text:txt }); }catch(e){}
+  } else {
+    // fallback final: baixa o arquivo
+    exportarTXT();
+    alert('Seu navegador não permite compartilhar direto. O arquivo TXT foi baixado — anexe no WhatsApp manualmente.');
+  }
+}
+
+// Enviar para a Planilha Google (via Apps Script — endpoint configurável).
+const SHEET_ENDPOINT = https://script.google.com/macros/s/AKfycbzC40nuyfKjA3Nlf9XoN5l7uHsIG0QYNGLZrnTkOzI4QPkP25NsgrT6s-JugKz3eiYK/exec'; // 
+async function exportarPlanilha(){
+  const msg = $('sheetMsg');
+  if(!SHEET_ENDPOINT){
+    msg.innerHTML = `<span style="color:var(--warn)">A integração com a planilha ainda não foi configurada. Cole a URL do Apps Script na variável <b>SHEET_ENDPOINT</b> do arquivo (instruções no chat).</span>`;
+    return;
+  }
+  msg.textContent = 'Enviando para a planilha…';
+  const payload = {
+    alvo: alvoLabel(), modo, alvoId: alvo,
+    data: new Date().toISOString(),
+    total, feitos, faltantes: total-feitos, erros: erros.length,
+    linhas: linhasDetalhadas()
+  };
+  try{
+    await fetch(SHEET_ENDPOINT, {
+      method:'POST', mode:'no-cors',
+      headers:{ 'Content-Type':'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    // com no-cors não dá pra ler a resposta; assumimos ok se não deu exceção
+    msg.innerHTML = `<span style="color:var(--ok)">✓ Enviado para a planilha (${bipados.length} linhas).</span>`;
+  }catch(e){
+    msg.innerHTML = `<span style="color:var(--err)">Falha ao enviar. Confira a conexão e a URL do Apps Script.</span>`;
+  }
+}
 
 // ── Eventos ──────────────────────────────────────────────────────────────────
 document.querySelectorAll('.mode-btn').forEach(b=>{
@@ -587,6 +883,27 @@ document.querySelectorAll('.mode-btn').forEach(b=>{
 });
 
 $('startBtn').addEventListener('click', iniciar);
+$('errOkBtn').addEventListener('click', fecharModalErro);
+
+// Pausar / retomar a leitura
+$('pauseBtn').addEventListener('click', ()=>{
+  leituraPausada = !leituraPausada;
+  const b = $('pauseBtn');
+  if(leituraPausada){
+    b.textContent = '▶ Retomar';
+    b.classList.add('paused');
+    const fb = $('feedback');
+    fb.className = 'feedback warn';
+    fb.innerHTML = `<div class="fb-status">⏸ EM PAUSA</div><div class="fb-detail">Leitura pausada. Toque em “Retomar” para continuar.</div>`;
+  } else {
+    b.textContent = '⏸ Pausar';
+    b.classList.remove('paused');
+    const fb = $('feedback');
+    fb.className = 'feedback';
+    fb.innerHTML = `<div class="fb-idle">Aguardando leitura…</div>`;
+    focarCampo();
+  }
+});
 $('changeTarget').addEventListener('click', ()=>{ if(confirm('Trocar o alvo? O progresso atual será perdido.')) voltarSetup(); });
 $('resetBtn').addEventListener('click', ()=>{ if(confirm('Zerar a contagem deste alvo?')){ montarEsperadas(); renderPlacar(); renderLista(); $('feedback').className='feedback'; $('feedback').innerHTML=`<div class="fb-idle">Aguardando leitura…</div>`; focarCampo(); } });
 $('finishBtn').addEventListener('click', ()=>{
@@ -594,8 +911,17 @@ $('finishBtn').addEventListener('click', ()=>{
   const msg = rem>0
     ? `Ainda faltam ${rem} volume(s) e há ${erros.length} erro(s). Finalizar mesmo assim?`
     : `Conferência completa! ${total} volumes, ${erros.length} erro(s). Finalizar?`;
-  if(confirm(msg)) voltarSetup();
+  if(!confirm(msg)) return;
+  // registra o alvo como conferido neste aparelho
+  marcarConferido(modo, alvo, { total, feitos, erros:erros.length, faltantes:rem });
+  abrirConclusao();
 });
+
+$('concVoltarBtn').addEventListener('click', voltarSetup);
+$('expShareBtn').addEventListener('click', exportarCompartilhar);
+$('expPdfBtn').addEventListener('click', exportarPDF);
+$('expTxtBtn').addEventListener('click', exportarTXT);
+$('expSheetBtn').addEventListener('click', exportarPlanilha);
 
 document.querySelectorAll('.tab').forEach(t=>{
   t.addEventListener('click', ()=>{
@@ -637,7 +963,7 @@ $('scanField').addEventListener('input', ()=>{
   scanTimer = setTimeout(lerCampo, 140);
 });
 // Mantém o foco no campo durante a conferência (se o operador tocar fora)
-document.addEventListener('click', ()=>{ if($('board').classList.contains('on')) setTimeout(focarCampo, 50); });
+document.addEventListener('click', ()=>{ if($('board').classList.contains('on') && !leituraPausada && !$('errModal').classList.contains('on')) setTimeout(focarCampo, 50); });
 
 // Início
 setConn('');
