@@ -375,6 +375,7 @@ let erros = [];             // [{ raw, motivo, hora }]
 let bipados = [];           // [{ code, nf, cod, item, volProd, totalProd, hora }] — log detalhado
 let feitos = 0, total = 0;
 let leituraPausada = false;   // trava a leitura (modal de erro aberto OU pausa manual)
+let scanTimer = null;         // timer de leitura (declarado cedo p/ evitar TDZ)
 
 // ── Firebase ───────────────────────────────────────────────────────────────
 function conectar(){
@@ -561,6 +562,11 @@ function abrirModalErro(code, diag){
 
   $('errModal').classList.add('on');
   leituraPausada = true;                 // trava novas leituras até o OK
+  // Reforço: tira o foco e limpa o campo, para o leitor não "digitar" nada
+  // enquanto o modal está aberto; cancela qualquer leitura pendente.
+  clearTimeout(scanTimer);
+  const campo = $('scanField');
+  if(campo){ campo.value=''; try{ campo.blur(); }catch(e){} }
   // som de erro repetindo enquanto o modal estiver aberto
   somErro();
   vibrar([80,50,80,50,120]);
@@ -571,8 +577,9 @@ function abrirModalErro(code, diag){
 function fecharModalErro(){
   $('errModal').classList.remove('on');
   clearInterval(errModalSoundTimer); errModalSoundTimer = null;
-  leituraPausada = false;
+  clearTimeout(scanTimer);
   const campo = $('scanField'); if(campo){ campo.value=''; }
+  leituraPausada = false;                // só aqui a leitura é liberada
   focarCampo();
 }
 
@@ -939,20 +946,25 @@ document.querySelectorAll('.tab').forEach(t=>{
 //   1. lê o valor atual do campo,
 //   2. LIMPA o campo imediatamente (antes de processar),
 //   3. processa o código lido.
-let scanTimer = null;
-
 function lerCampo(){
   const campo = $('scanField');
   const valor = campo.value;      // captura
-  campo.value = '';               // limpa ANTES de processar (evita resíduo/concatenação)
+  campo.value = '';               // limpa SEMPRE (evita resíduo/concatenação)
   clearTimeout(scanTimer);
+  // Se a leitura está travada (modal de erro aberto ou pausa), descarta o que
+  // o leitor tiver digitado. Nada é processado até apertar OK / retomar.
+  if(leituraPausada) return;
   const code = (valor||'').trim();
   if(code.length >= 6) processarLeitura(code);
 }
 
 // Enter (fim de leitura da maioria dos leitores) → processa na hora.
 $('scanField').addEventListener('keydown', e=>{
-  if(e.key==='Enter'){ e.preventDefault(); lerCampo(); }
+  if(e.key==='Enter'){
+    e.preventDefault();
+    if(leituraPausada){ $('scanField').value=''; return; } // travado: descarta
+    lerCampo();
+  }
 });
 
 // Leitores sem Enter: após uma pausa na "digitação", processa o que chegou.
@@ -960,6 +972,7 @@ $('scanField').addEventListener('keydown', e=>{
 // leitor termina de mandar o código inteiro.
 $('scanField').addEventListener('input', ()=>{
   clearTimeout(scanTimer);
+  if(leituraPausada){ $('scanField').value=''; return; } // travado: descarta o que foi digitado
   scanTimer = setTimeout(lerCampo, 140);
 });
 // Mantém o foco no campo durante a conferência (se o operador tocar fora)
