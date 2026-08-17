@@ -415,6 +415,14 @@ function setConn(state){
   el.textContent = state==='on' ? 'em tempo real' : state==='err' ? 'sem conexão' : 'conectando…';
 }
 
+// Índices reconstruídos a cada atualização (espelham a aba "Acompanhamento de
+// Cargas"): a verdade sobre a relação NF ↔ minuta vem do MESMO cruzamento que
+// a tabela de Prazos de Separação usa lá — uma NF pertence à minuta que a lista,
+// e só entra na conferência se estiver em algum PROCESSO.
+let nfToMinuta = {};        // { nf: idMinuta }  — última minuta que reivindica a NF
+let minutaToNfs = {};       // { idMinuta: [nfs...] } — só NFs presentes em processos
+let nfsEmProcessos = new Set();
+
 // Converte o nó bruto do Firebase nas estruturas usadas aqui.
 function hidratar(){
   const parse = k => { try{ return typeof remote[k]==='string' ? JSON.parse(remote[k]) : (remote[k]||null); }catch(e){ return null; } };
@@ -422,22 +430,65 @@ function hidratar(){
   banco = { items: db.items||[], meta: db.meta||{}, minutas: db.minutas||{} };
   processos = parse('processos-data') || {};
   minutas   = parse('minutas-data')   || {};
+  reconstruirIndices();
+}
+
+// Reproduz a lógica da aba Acompanhamento de Cargas:
+//   nfToMinuta[nf] = minuta que contém a NF (rebuild a partir de minutas)
+//   minutaToNfs[id] = NFs dessa minuta que REALMENTE aparecem em algum processo
+// Assim o Conferidor conta e confere exatamente o que se vê na tabela de lá,
+// sem NFs órfãs/migradas que ficaram presas no array bruto da minuta.
+function reconstruirIndices(){
+  nfToMinuta = {};
+  Object.values(minutas).forEach(m=>{
+    (m.nfs||[]).forEach(nf=>{ nfToMinuta[String(nf)] = String(m.id); });
+  });
+  nfsEmProcessos = new Set();
+  Object.values(processos).forEach(p=>{
+    (p.nfs||[]).forEach(nf=> nfsEmProcessos.add(String(nf)));
+  });
+  // minutaToNfs: para cada minuta, as NFs que REALMENTE resolvem para ela
+  // (nfToMinuta) e que existem no sistema — seja porque estão em algum processo
+  // (aba Acompanhamento) OU porque têm XML carregado (etiquetas geradas).
+  // Isso remove NFs "presas" que migraram para outra minuta e evita a contagem
+  // inflada, mantendo tudo alinhado com o que se vê no Acompanhamento de Cargas.
+  const comXmlSet = new Set(banco.items.map(i=>normNf(i.nf)));
+  minutaToNfs = {};
+  Object.values(minutas).forEach(m=>{
+    const id = String(m.id);
+    const lista = [];
+    const vistos = new Set();
+    (m.nfs||[]).forEach(nf=>{
+      const s = String(nf), k = normNf(nf);
+      if(vistos.has(k)) return;               // sem duplicatas
+      if(nfToMinuta[s] !== id) return;        // NF migrou p/ outra minuta → ignora
+      if(!nfsEmProcessos.has(s) && !comXmlSet.has(k)) return; // não existe em lugar nenhum
+      vistos.add(k); lista.push(s);
+    });
+    minutaToNfs[id] = lista;
+  });
 }
 
 // ── Montagem das etiquetas esperadas ────────────────────────────────────────
 // Reproduz a fórmula do gerador para as NFs do alvo escolhido.
 function nfsDoAlvo(){
-  if(modo==='processo'){ const p = processos[alvo]; return p ? [...p.nfs] : []; }
-  if(modo==='minuta'){ const m = minutas[alvo]; return m ? [...(m.nfs||[])] : []; }
-  if(modo==='nota'){ return [alvo]; }
+  if(modo==='processo'){ const p = processos[alvo]; return p ? [...(p.nfs||[])].map(String) : []; }
+  if(modo==='minuta'){ return minutaToNfs[alvo] ? [...minutaToNfs[alvo]] : []; }
+  if(modo==='nota'){ return [String(alvo)]; }
   return [];
 }
+
+// Normaliza um número de NF para comparação (remove espaços e zeros à esquerda),
+// evitando falsos "sem XML" por diferença de formatação entre as bases.
+function normNf(nf){ return String(nf==null?'':nf).trim().replace(/^0+(?=\d)/,''); }
 
 // Retorna as NFs do alvo que NÃO têm XML carregado no banco (sem itens →
 // não dá pra saber SKU nem quantidade → impossível reconstruir as etiquetas).
 function nfsSemXml(listaNfs){
-  const comXml = new Set(banco.items.map(i => String(i.nf)));
-  return [...new Set(listaNfs.map(String))].filter(nf => !comXml.has(nf));
+  const comXml = new Set(banco.items.map(i => normNf(i.nf)));
+  const vistos = new Set(); const out = [];
+  listaNfs.forEach(nf=>{ const k=normNf(nf); if(vistos.has(k)) return; vistos.add(k); if(!comXml.has(k)) out.push(String(nf)); });
+  return out;
 }
 let semXmlAtual = [];   // NFs do alvo selecionado que faltam XML
 
@@ -445,9 +496,9 @@ function montarEsperadas(){
   esperadas = new Map();
   porSku = new Map();
   const listaNfs = nfsDoAlvo();
-  const nfs = new Set(listaNfs.map(String));
+  const nfs = new Set(listaNfs.map(normNf));
   semXmlAtual = nfsSemXml(listaNfs);
-  const itens = banco.items.filter(i => nfs.has(String(i.nf)));
+  const itens = banco.items.filter(i => nfs.has(normNf(i.nf)));
   for(const it of itens){
     const minuta = banco.minutas[it.nf] || '';
     const totalProd = Math.max(1, Math.floor(it.qtd));
@@ -675,8 +726,8 @@ function preencherOpcoes(){
   const selo = (mo,id)=>{ const c = statusConferido(mo,id); return c ? `✓ ` : ''; };
   const seloFim = (mo,id)=>{ const c = statusConferido(mo,id); return c ? ` — CONFERIDO` : ''; };
   // Conjunto de NFs que possuem XML carregado (para marcar quem está incompleto).
-  const comXml = new Set(banco.items.map(i=>String(i.nf)));
-  const faltando = nfs => nfs.map(String).filter(nf=>!comXml.has(nf)).length;
+  const comXml = new Set(banco.items.map(i=>normNf(i.nf)));
+  const faltando = nfs => { const v=new Set(); let n=0; nfs.forEach(nf=>{const k=normNf(nf); if(v.has(k))return; v.add(k); if(!comXml.has(k))n++;}); return n; };
   if(modo==='processo'){
     opts = Object.values(processos)
       .sort((a,b)=>(a.ano-b.ano)||(a.mes-b.mes)||(a.dia-b.dia)||String(a.codigo).localeCompare(String(b.codigo)))
@@ -685,8 +736,8 @@ function preencherOpcoes(){
   } else if(modo==='minuta'){
     opts = Object.values(minutas)
       .sort((a,b)=>String(a.id).localeCompare(String(b.id),undefined,{numeric:true}))
-      .map(m=>{ const nsem=faltando(m.nfs||[]); return { v:m.id, key:`${m.id} ${(m.nfs||[]).join(' ')}`,
-        t:`${selo('minuta',m.id)}Minuta ${m.id} · ${(m.nfs||[]).length} NF${nsem?` ⚠ ${nsem} s/ XML`:''}${seloFim('minuta',m.id)}` }; });
+      .map(m=>{ const lista=minutaToNfs[m.id]||[]; const nsem=faltando(lista); return { v:m.id, key:`${m.id} ${lista.join(' ')}`,
+        t:`${selo('minuta',m.id)}Minuta ${m.id} · ${lista.length} NF${nsem?` ⚠ ${nsem} s/ XML`:''}${seloFim('minuta',m.id)}` }; });
   } else {
     const nfs = [...new Set(banco.items.map(i=>i.nf))].sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true}));
     opts = nfs.map(nf=>({ v:nf, key:String(nf), t:`${selo('nota',nf)}NF ${nf}${seloFim('nota',nf)}` }));
@@ -723,9 +774,9 @@ function atualizarAvisoXml(){
   if(!val){ box.style.display='none'; box.innerHTML=''; return; }
   // reaproveita a lógica de nfsDoAlvo sem alterar o estado global 'alvo'
   let listaNfs = [];
-  if(modo==='processo'){ const p=processos[val]; listaNfs = p?[...(p.nfs||[])]:[]; }
-  else if(modo==='minuta'){ const m=minutas[val]; listaNfs = m?[...(m.nfs||[])]:[]; }
-  else { listaNfs = [val]; }
+  if(modo==='processo'){ const p=processos[val]; listaNfs = p?[...(p.nfs||[])].map(String):[]; }
+  else if(modo==='minuta'){ listaNfs = minutaToNfs[val] ? [...minutaToNfs[val]] : []; }
+  else { listaNfs = [String(val)]; }
   const faltam = nfsSemXml(listaNfs);
   if(!faltam.length){ box.style.display='none'; box.innerHTML=''; return; }
   const chips = faltam.map(nf=>`<span class="nf-chip">${esc(nf)}</span>`).join('');
@@ -752,7 +803,7 @@ function iniciar(){
     return;
   }
   if(semXmlAtual.length){
-    const totalNfs = new Set(nfsDoAlvo().map(String)).size;
+    const totalNfs = new Set(nfsDoAlvo().map(normNf)).size;
     const comXmlN = totalNfs - semXmlAtual.length;
     const ok = confirm('Atenção: '+semXmlAtual.length+' de '+totalNfs+' nota(s) deste '+rotuloModo()+' estão SEM XML e NÃO serão conferidas:\n\n'
       + semXmlAtual.join(', ') + '\n\n'
