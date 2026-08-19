@@ -1010,6 +1010,10 @@ async function exportarPlanilha(){
     msg.innerHTML = `<span style="color:var(--warn)">A integração com a planilha ainda não foi configurada. Cole a URL do Apps Script na variável <b>SHEET_ENDPOINT</b> do arquivo (instruções no chat).</span>`;
     return;
   }
+  if(!bipados.length){
+    msg.innerHTML = `<span style="color:var(--warn)">Nada para enviar ainda — nenhum volume foi bipado.</span>`;
+    return;
+  }
   msg.textContent = 'Enviando para a planilha…';
   const payload = {
     alvo: alvoLabel(), modo, alvoId: alvo,
@@ -1017,16 +1021,43 @@ async function exportarPlanilha(){
     total, feitos, faltantes: total-feitos, erros: erros.length,
     linhas: linhasDetalhadas()
   };
+  const body = JSON.stringify(payload);
+  // 1ª tentativa: envio COM leitura da resposta (assim sabemos se gravou mesmo).
+  // O Apps Script publicado como "Qualquer pessoa" responde com CORS liberado.
   try{
-    await fetch(SHEET_ENDPOINT, {
-      method:'POST', mode:'no-cors',
-      headers:{ 'Content-Type':'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
+    const resp = await fetch(SHEET_ENDPOINT, {
+      method:'POST',
+      headers:{ 'Content-Type':'text/plain;charset=utf-8' }, // evita preflight CORS
+      body
     });
-    // com no-cors não dá pra ler a resposta; assumimos ok se não deu exceção
-    msg.innerHTML = `<span style="color:var(--ok)">✓ Enviado para a planilha (${bipados.length} linhas).</span>`;
+    let txt = '';
+    try{ txt = await resp.text(); }catch(e){}
+    if(resp.ok){
+      // tenta interpretar {ok:true, gravadas:N} se o script devolver JSON
+      let info = null; try{ info = JSON.parse(txt); }catch(e){}
+      if(info && info.ok===false){
+        msg.innerHTML = `<span style="color:var(--err)">A planilha recusou os dados: ${esc(info.erro||'erro desconhecido')}.</span>`;
+      }else{
+        const n = (info && (info.gravadas||info.linhas)) || bipados.length;
+        msg.innerHTML = `<span style="color:var(--ok)">✓ Enviado e confirmado pela planilha (${n} linha${n===1?'':'s'}).</span>`;
+      }
+      return;
+    }
+    // resposta chegou mas com status de erro (ex.: 401/403/500)
+    msg.innerHTML = `<span style="color:var(--err)">A planilha respondeu com erro ${resp.status}. `
+      + `Verifique se o Apps Script está publicado como <b>Executar como: eu</b> e <b>Quem tem acesso: qualquer pessoa</b>.</span>`;
+    return;
   }catch(e){
-    msg.innerHTML = `<span style="color:var(--err)">Falha ao enviar. Confira a conexão e a URL do Apps Script.</span>`;
+    // Falhou por CORS (ou rede). Reenvia em modo no-cors como último recurso —
+    // sem conseguir ler a resposta, então avisamos que é preciso conferir a planilha.
+    try{
+      await fetch(SHEET_ENDPOINT, { method:'POST', mode:'no-cors',
+        headers:{ 'Content-Type':'text/plain;charset=utf-8' }, body });
+      msg.innerHTML = `<span style="color:var(--warn)">Enviado, mas sem confirmação de leitura (bloqueio CORS). `
+        + `Confira se as ${bipados.length} linhas apareceram na planilha. Se não aparecerem, o Apps Script precisa ser republicado.</span>`;
+    }catch(e2){
+      msg.innerHTML = `<span style="color:var(--err)">Falha ao enviar. Confira a internet do tablet e a URL do Apps Script (SHEET_ENDPOINT).</span>`;
+    }
   }
 }
 
