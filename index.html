@@ -11,6 +11,7 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 
 <style>
 /* ─────────────────────────────────────────────────────────────────────────
@@ -79,20 +80,6 @@ select.pick{
   padding:18px;font-size:17px;font-weight:800;letter-spacing:.3px;cursor:pointer;
   background:var(--accent);color:#fff;
 }
-.pick-search{
-  width:100%;background:var(--panel2);border:1.5px solid var(--line);color:var(--ink);
-  border-radius:10px;padding:12px 12px;font-size:16px;font-weight:600;margin-bottom:8px;
-  -webkit-appearance:none;appearance:none;
-}
-.pick-search:focus{outline:none;border-color:var(--accent,#3b82f6)}
-.pick-count{font-size:11px;color:var(--dim);margin:6px 2px 0;font-weight:600}
-.warn-xml{
-  margin-top:10px;background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.45);
-  color:#f9c74f;border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.5;
-}
-.warn-xml b{color:#ffd97a}
-.warn-xml .nf-list{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
-.warn-xml .nf-chip{background:rgba(245,158,11,.18);border-radius:6px;padding:2px 7px;font-weight:700;font-size:11px}
 .big-btn:disabled{opacity:.4}
 .big-btn.ghost{background:var(--panel2);color:var(--ink);border:1.5px solid var(--line)}
 .hint{font-size:12px;color:var(--dim);margin-top:10px;line-height:1.5}
@@ -267,11 +254,7 @@ select.pick{
         <button class="mode-btn" data-mode="nota">Nota Fiscal</button>
       </div>
       <label class="fld" id="pickLbl">Escolha o processo</label>
-      <input class="pick-search" id="pickSearch" inputmode="search" autocomplete="off"
-             autocorrect="off" spellcheck="false" placeholder="🔎 Digite p/ filtrar (nº do processo, minuta ou NF)">
       <select class="pick" id="pick"><option>Carregando…</option></select>
-      <div class="pick-count" id="pickCount"></div>
-      <div class="warn-xml" id="warnXml" style="display:none"></div>
       <button class="big-btn" id="startBtn" disabled>Iniciar conferência</button>
       <div class="hint" id="setupHint">Os dados vêm em tempo real do sistema. Assim que as etiquetas forem geradas lá, aparecem aqui.</div>
     </div>
@@ -296,7 +279,6 @@ select.pick{
       <span class="t-val" id="targetVal">—</span>
       <button id="changeTarget">trocar</button>
     </div>
-    <div class="warn-xml" id="boardWarnXml" style="display:none;margin:0 0 10px"></div>
 
     <div class="progress-card">
       <div class="pc-counts">
@@ -330,6 +312,12 @@ select.pick{
     <div class="setup-card">
       <h2 id="concTitulo">Conferência finalizada</h2>
       <div id="concResumo"></div>
+    </div>
+    <div class="setup-card" id="faltantesCard" style="display:none;border-color:var(--warn)">
+      <h2 style="color:var(--warn)">⚠ Etiquetas faltantes</h2>
+      <div class="hint" style="margin-bottom:12px">Estes volumes não foram bipados. Você pode reimprimir as etiquetas faltantes para refazer a conferência.</div>
+      <div id="faltantesLista"></div>
+      <button class="big-btn" id="reimprimirBtn" style="background:var(--warn);color:#1a1200">🖨️ Reimprimir etiquetas faltantes</button>
     </div>
     <div class="setup-card">
       <h2>Exportar relação de bipados</h2>
@@ -415,14 +403,6 @@ function setConn(state){
   el.textContent = state==='on' ? 'em tempo real' : state==='err' ? 'sem conexão' : 'conectando…';
 }
 
-// Índices reconstruídos a cada atualização (espelham a aba "Acompanhamento de
-// Cargas"): a verdade sobre a relação NF ↔ minuta vem do MESMO cruzamento que
-// a tabela de Prazos de Separação usa lá — uma NF pertence à minuta que a lista,
-// e só entra na conferência se estiver em algum PROCESSO.
-let nfToMinuta = {};        // { nf: idMinuta }  — última minuta que reivindica a NF
-let minutaToNfs = {};       // { idMinuta: [nfs...] } — só NFs presentes em processos
-let nfsEmProcessos = new Set();
-
 // Converte o nó bruto do Firebase nas estruturas usadas aqui.
 function hidratar(){
   const parse = k => { try{ return typeof remote[k]==='string' ? JSON.parse(remote[k]) : (remote[k]||null); }catch(e){ return null; } };
@@ -430,75 +410,22 @@ function hidratar(){
   banco = { items: db.items||[], meta: db.meta||{}, minutas: db.minutas||{} };
   processos = parse('processos-data') || {};
   minutas   = parse('minutas-data')   || {};
-  reconstruirIndices();
-}
-
-// Reproduz a lógica da aba Acompanhamento de Cargas:
-//   nfToMinuta[nf] = minuta que contém a NF (rebuild a partir de minutas)
-//   minutaToNfs[id] = NFs dessa minuta que REALMENTE aparecem em algum processo
-// Assim o Conferidor conta e confere exatamente o que se vê na tabela de lá,
-// sem NFs órfãs/migradas que ficaram presas no array bruto da minuta.
-function reconstruirIndices(){
-  nfToMinuta = {};
-  Object.values(minutas).forEach(m=>{
-    (m.nfs||[]).forEach(nf=>{ nfToMinuta[String(nf)] = String(m.id); });
-  });
-  nfsEmProcessos = new Set();
-  Object.values(processos).forEach(p=>{
-    (p.nfs||[]).forEach(nf=> nfsEmProcessos.add(String(nf)));
-  });
-  // minutaToNfs: para cada minuta, as NFs que REALMENTE resolvem para ela
-  // (nfToMinuta) e que existem no sistema — seja porque estão em algum processo
-  // (aba Acompanhamento) OU porque têm XML carregado (etiquetas geradas).
-  // Isso remove NFs "presas" que migraram para outra minuta e evita a contagem
-  // inflada, mantendo tudo alinhado com o que se vê no Acompanhamento de Cargas.
-  const comXmlSet = new Set(banco.items.map(i=>normNf(i.nf)));
-  minutaToNfs = {};
-  Object.values(minutas).forEach(m=>{
-    const id = String(m.id);
-    const lista = [];
-    const vistos = new Set();
-    (m.nfs||[]).forEach(nf=>{
-      const s = String(nf), k = normNf(nf);
-      if(vistos.has(k)) return;               // sem duplicatas
-      if(nfToMinuta[s] !== id) return;        // NF migrou p/ outra minuta → ignora
-      if(!nfsEmProcessos.has(s) && !comXmlSet.has(k)) return; // não existe em lugar nenhum
-      vistos.add(k); lista.push(s);
-    });
-    minutaToNfs[id] = lista;
-  });
 }
 
 // ── Montagem das etiquetas esperadas ────────────────────────────────────────
 // Reproduz a fórmula do gerador para as NFs do alvo escolhido.
 function nfsDoAlvo(){
-  if(modo==='processo'){ const p = processos[alvo]; return p ? [...(p.nfs||[])].map(String) : []; }
-  if(modo==='minuta'){ return minutaToNfs[alvo] ? [...minutaToNfs[alvo]] : []; }
-  if(modo==='nota'){ return [String(alvo)]; }
+  if(modo==='processo'){ const p = processos[alvo]; return p ? [...p.nfs] : []; }
+  if(modo==='minuta'){ const m = minutas[alvo]; return m ? [...(m.nfs||[])] : []; }
+  if(modo==='nota'){ return [alvo]; }
   return [];
 }
-
-// Normaliza um número de NF para comparação (remove espaços e zeros à esquerda),
-// evitando falsos "sem XML" por diferença de formatação entre as bases.
-function normNf(nf){ return String(nf==null?'':nf).trim().replace(/^0+(?=\d)/,''); }
-
-// Retorna as NFs do alvo que NÃO têm XML carregado no banco (sem itens →
-// não dá pra saber SKU nem quantidade → impossível reconstruir as etiquetas).
-function nfsSemXml(listaNfs){
-  const comXml = new Set(banco.items.map(i => normNf(i.nf)));
-  const vistos = new Set(); const out = [];
-  listaNfs.forEach(nf=>{ const k=normNf(nf); if(vistos.has(k)) return; vistos.add(k); if(!comXml.has(k)) out.push(String(nf)); });
-  return out;
-}
-let semXmlAtual = [];   // NFs do alvo selecionado que faltam XML
 
 function montarEsperadas(){
   esperadas = new Map();
   porSku = new Map();
-  const listaNfs = nfsDoAlvo();
-  const nfs = new Set(listaNfs.map(normNf));
-  semXmlAtual = nfsSemXml(listaNfs);
-  const itens = banco.items.filter(i => nfs.has(normNf(i.nf)));
+  const nfs = new Set(nfsDoAlvo());
+  const itens = banco.items.filter(i => nfs.has(i.nf));
   for(const it of itens){
     const minuta = banco.minutas[it.nf] || '';
     const totalProd = Math.max(1, Math.floor(it.qtd));
@@ -725,66 +652,25 @@ function preencherOpcoes(){
   // marca ✓ nos que já foram conferidos neste aparelho
   const selo = (mo,id)=>{ const c = statusConferido(mo,id); return c ? `✓ ` : ''; };
   const seloFim = (mo,id)=>{ const c = statusConferido(mo,id); return c ? ` — CONFERIDO` : ''; };
-  // Conjunto de NFs que possuem XML carregado (para marcar quem está incompleto).
-  const comXml = new Set(banco.items.map(i=>normNf(i.nf)));
-  const faltando = nfs => { const v=new Set(); let n=0; nfs.forEach(nf=>{const k=normNf(nf); if(v.has(k))return; v.add(k); if(!comXml.has(k))n++;}); return n; };
   if(modo==='processo'){
     opts = Object.values(processos)
       .sort((a,b)=>(a.ano-b.ano)||(a.mes-b.mes)||(a.dia-b.dia)||String(a.codigo).localeCompare(String(b.codigo)))
-      .map(p=>{ const nsem=faltando(p.nfs||[]); return { v:p.codigo, key:`${p.codigo} ${(p.nfs||[]).join(' ')}`,
-        t:`${selo('processo',p.codigo)}${p.codigo} · ${String(p.dia).padStart(2,'0')}/${String(p.mes).padStart(2,'0')} · ${(p.nfs||[]).length} NF${nsem?` ⚠ ${nsem} s/ XML`:''}${seloFim('processo',p.codigo)}` }; });
+      .map(p=>({ v:p.codigo, t:`${selo('processo',p.codigo)}${p.codigo} · ${String(p.dia).padStart(2,'0')}/${String(p.mes).padStart(2,'0')} · ${p.nfs.length} NF${seloFim('processo',p.codigo)}` }));
   } else if(modo==='minuta'){
     opts = Object.values(minutas)
       .sort((a,b)=>String(a.id).localeCompare(String(b.id),undefined,{numeric:true}))
-      .map(m=>{ const lista=minutaToNfs[m.id]||[]; const nsem=faltando(lista); return { v:m.id, key:`${m.id} ${lista.join(' ')}`,
-        t:`${selo('minuta',m.id)}Minuta ${m.id} · ${lista.length} NF${nsem?` ⚠ ${nsem} s/ XML`:''}${seloFim('minuta',m.id)}` }; });
+      .map(m=>({ v:m.id, t:`${selo('minuta',m.id)}Minuta ${m.id} · ${(m.nfs||[]).length} NF${seloFim('minuta',m.id)}` }));
   } else {
     const nfs = [...new Set(banco.items.map(i=>i.nf))].sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true}));
-    opts = nfs.map(nf=>({ v:nf, key:String(nf), t:`${selo('nota',nf)}NF ${nf}${seloFim('nota',nf)}` }));
+    opts = nfs.map(nf=>({ v:nf, t:`${selo('nota',nf)}NF ${nf}${seloFim('nota',nf)}` }));
   }
-  const totalOpts = opts.length;
-  // Filtro por digitação (nº do processo, minuta ou NF)
-  const termo = ($('pickSearch') && $('pickSearch').value || '').trim().toLowerCase();
-  if(termo){
-    const termos = termo.split(/\s+/);
-    opts = opts.filter(o => termos.every(t => o.key.toLowerCase().includes(t)));
-  }
-  const cnt = $('pickCount');
-  if(!totalOpts){
+  if(!opts.length){
     sel.innerHTML = `<option value="">Nada disponível ainda</option>`;
     $('startBtn').disabled = true;
-    if(cnt) cnt.textContent = '';
-  } else if(!opts.length){
-    sel.innerHTML = `<option value="">Nenhum resultado para "${esc(termo)}"</option>`;
-    $('startBtn').disabled = true;
-    if(cnt) cnt.textContent = `0 de ${totalOpts} — nada bate com a busca`;
   } else {
     sel.innerHTML = opts.map(o=>`<option value="${esc(o.v)}">${esc(o.t)}</option>`).join('');
     $('startBtn').disabled = false;
-    if(cnt) cnt.textContent = termo ? `${opts.length} de ${totalOpts}` : `${totalOpts} disponíve${totalOpts===1?'l':'is'}`;
   }
-  atualizarAvisoXml();
-}
-
-// Mostra, para o alvo selecionado no dropdown, quais NFs estão sem XML.
-function atualizarAvisoXml(){
-  const box = $('warnXml');
-  if(!box) return;
-  const val = $('pick') && $('pick').value;
-  if(!val){ box.style.display='none'; box.innerHTML=''; return; }
-  // reaproveita a lógica de nfsDoAlvo sem alterar o estado global 'alvo'
-  let listaNfs = [];
-  if(modo==='processo'){ const p=processos[val]; listaNfs = p?[...(p.nfs||[])].map(String):[]; }
-  else if(modo==='minuta'){ listaNfs = minutaToNfs[val] ? [...minutaToNfs[val]] : []; }
-  else { listaNfs = [String(val)]; }
-  const faltam = nfsSemXml(listaNfs);
-  if(!faltam.length){ box.style.display='none'; box.innerHTML=''; return; }
-  const chips = faltam.map(nf=>`<span class="nf-chip">${esc(nf)}</span>`).join('');
-  box.innerHTML = `⚠ <b>${faltam.length} de ${listaNfs.length}</b> nota(s) sem XML carregado no sistema — `
-    + `essas <b>não serão conferidas</b> (o sistema não tem os produtos nem as quantidades delas). `
-    + `Carregue os XMLs no gerador de etiquetas para incluí-las.`
-    + `<div class="nf-list">${chips}</div>`;
-  box.style.display='block';
 }
 
 function iniciar(){
@@ -793,35 +679,13 @@ function iniciar(){
   if(!alvo) return;
   montarEsperadas();
   if(total===0){
-    if(semXmlAtual.length){
-      alert('Nenhuma das '+semXmlAtual.length+' nota(s) deste '+rotuloModo()+' tem XML carregado no sistema.\n\n'
-        + 'NFs sem XML: '+semXmlAtual.join(', ')+'\n\n'
-        + 'Carregue os XMLs no gerador de etiquetas primeiro.');
-    } else {
-      alert('Este '+rotuloModo()+' não tem volumes com XML carregado ainda. Gere as etiquetas no sistema primeiro.');
-    }
+    alert('Este '+rotuloModo()+' não tem volumes com XML carregado ainda. Gere as etiquetas no sistema primeiro.');
     return;
-  }
-  if(semXmlAtual.length){
-    const totalNfs = new Set(nfsDoAlvo().map(normNf)).size;
-    const comXmlN = totalNfs - semXmlAtual.length;
-    const ok = confirm('Atenção: '+semXmlAtual.length+' de '+totalNfs+' nota(s) deste '+rotuloModo()+' estão SEM XML e NÃO serão conferidas:\n\n'
-      + semXmlAtual.join(', ') + '\n\n'
-      + 'Vou conferir só as '+comXmlN+' nota(s) que têm XML. Continuar?');
-    if(!ok) return;
   }
   $('setup').style.display='none';
   $('board').classList.add('on');
   $('actionBar').style.display='flex';
   $('targetVal').textContent = (modo==='processo'?'Processo ':modo==='minuta'?'Minuta ':'NF ') + alvo;
-  const bw = $('boardWarnXml');
-  if(bw){
-    if(semXmlAtual.length){
-      const chips = semXmlAtual.map(nf=>`<span class="nf-chip">${esc(nf)}</span>`).join('');
-      bw.innerHTML = `⚠ <b>${semXmlAtual.length}</b> nota(s) sem XML fora da conferência:<div class="nf-list">${chips}</div>`;
-      bw.style.display='block';
-    } else { bw.style.display='none'; bw.innerHTML=''; }
-  }
   $('feedback').className='feedback';
   $('feedback').innerHTML = `<div class="fb-idle">Aguardando leitura…</div>`;
   renderPlacar(); renderLista();
@@ -872,6 +736,110 @@ function abrirConclusao(){
     <div class="eb-row"><span class="eb-k">Faltantes</span><span class="eb-v"><b>${rem}</b></span></div>
     <div class="eb-row"><span class="eb-k">Erros</span><span class="eb-v"><b>${erros.length}</b></span></div>`;
   $('sheetMsg').textContent = '';
+
+  // Etiquetas faltantes: as esperadas que não foram bipadas
+  const faltantes = etiquetasFaltantes();
+  const card = $('faltantesCard');
+  if(faltantes.length){
+    card.style.display='block';
+    // agrupa por SKU para exibir de forma compacta
+    const porCod = {};
+    faltantes.forEach(f=>{ (porCod[f.cod] = porCod[f.cod]||[]).push(f); });
+    let html = '';
+    Object.keys(porCod).sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true})).forEach(cod=>{
+      const lista = porCod[cod];
+      const vols = lista.map(f=>`${f.volProd}/${f.totalProd}`).join(', ');
+      html += `<div class="li" style="border-color:var(--warn);margin-bottom:6px">
+        <div>
+          <div class="li-cod">${esc(cod)}</div>
+          <div class="li-meta">NF ${esc(lista[0].nf)} · ${esc((lista[0].item||'').slice(0,32))}</div>
+        </div>
+        <div class="li-count" style="color:var(--warn)">faltam ${lista.length}</div>
+      </div>
+      <div style="font-size:11px;color:var(--dim);margin:-2px 0 10px 4px">volumes: ${vols}</div>`;
+    });
+    $('faltantesLista').innerHTML = html;
+  } else {
+    card.style.display='none';
+  }
+}
+
+// Retorna a lista de volumes esperados que NÃO foram bipados.
+function etiquetasFaltantes(){
+  const faltantes = [];
+  for(const [bcVal, info] of esperadas.entries()){
+    if((contagem.get(bcVal)||0) < 1){
+      faltantes.push({ bcVal, nf:info.nf, cod:info.cod, item:info.item, volProd:info.volProd, totalProd:info.totalProd });
+    }
+  }
+  // ordena por SKU e depois volume
+  faltantes.sort((a,b)=> String(a.cod).localeCompare(String(b.cod),undefined,{numeric:true}) || a.volProd-b.volProd);
+  return faltantes;
+}
+
+// Reimprime as etiquetas faltantes numa janela de impressão. Cada etiqueta
+// traz o MESMO código de barras do sistema (para poder rebipar), além de NF,
+// SKU, volume, cliente e cidade (quando disponíveis no banco de notas).
+function reimprimirFaltantes(){
+  const faltantes = etiquetasFaltantes();
+  if(!faltantes.length){ alert('Não há etiquetas faltantes.'); return; }
+
+  const cards = faltantes.map(f=>{
+    const meta = (banco.meta && banco.meta[f.nf]) || {};
+    const cidade = meta.cidade ? (meta.cidade + (meta.uf?(' - '+meta.uf):'')) : '';
+    const dest = meta.dest || '';
+    const bcId = 'bc_'+f.bcVal.replace(/\W/g,'');
+    return `
+      <div class="et">
+        <div class="et-head">
+          <div class="et-nf"><span>NF</span><b>${esc(f.nf)}</b></div>
+          <div class="et-vol"><span>VOLUME</span><b>${f.volProd}/${f.totalProd}</b></div>
+        </div>
+        <div class="et-dest">${dest?esc(dest):'&nbsp;'}</div>
+        <div class="et-mid">
+          <div class="et-sku"><span>SKU</span><b>${esc(f.cod)}</b></div>
+          <div class="et-cidade">${cidade?esc(cidade):'&nbsp;'}</div>
+        </div>
+        <div class="et-item">${esc((f.item||'').slice(0,60))}</div>
+        <svg class="et-bc" id="${bcId}" data-val="${esc(f.bcVal)}"></svg>
+        <div class="et-code">${esc(f.bcVal)}</div>
+      </div>`;
+  }).join('');
+
+  const win = window.open('', '_blank');
+  if(!win){ alert('Permita pop-ups para reimprimir as etiquetas.'); return; }
+  win.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
+    <title>Etiquetas faltantes — ${esc(alvoLabel())}</title>
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"><\/script>
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{font-family:Arial,sans-serif;background:#fff;color:#000;padding:8px}
+      .et{width:100mm;border:2px solid #000;border-radius:4px;padding:6mm;margin:0 auto 6mm;page-break-after:always;break-after:page}
+      .et-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1.5px solid #000;padding-bottom:3mm}
+      .et-head span{display:block;font-size:9pt;letter-spacing:1px;color:#333}
+      .et-head b{font-size:26pt;line-height:1;font-weight:800}
+      .et-vol{text-align:right}
+      .et-dest{font-size:13pt;font-weight:700;padding:3mm 0 1mm}
+      .et-mid{display:flex;justify-content:space-between;align-items:center;padding:2mm 0}
+      .et-sku span{font-size:9pt;color:#333;letter-spacing:1px}
+      .et-sku b{font-size:20pt;font-weight:800}
+      .et-cidade{font-size:15pt;font-weight:800;text-transform:uppercase}
+      .et-item{font-size:10pt;color:#222;padding-bottom:3mm;border-bottom:1px dashed #999;margin-bottom:3mm}
+      .et-bc{width:100%;height:60px}
+      .et-code{text-align:center;font-family:monospace;font-size:11pt;letter-spacing:1px;margin-top:1mm}
+      @media print{ body{padding:0} .et{margin:0} }
+    </style></head><body>
+    ${cards}
+    <script>
+      window.onload = function(){
+        document.querySelectorAll('.et-bc').forEach(function(svg){
+          try{ JsBarcode(svg, svg.dataset.val, {format:'CODE128',width:1.6,height:55,displayValue:false,margin:0}); }catch(e){}
+        });
+        setTimeout(function(){ window.print(); }, 500);
+      };
+    <\/script>
+    </body></html>`);
+  win.document.close();
 }
 
 // Nome-base do arquivo, ex.: conferencia_Processo-202607_2026-08-12_1530
@@ -998,7 +966,11 @@ const SHEET_ENDPOINT = 'https://script.google.com/macros/s/AKfycbzC40nuyfKjA3Nlf
 async function exportarPlanilha(){
   const msg = $('sheetMsg');
   if(!SHEET_ENDPOINT){
-    msg.innerHTML = `<span style="color:var(--warn)">A integração com a planilha ainda não foi configurada. Cole a URL do Apps Script na variável <b>SHEET_ENDPOINT</b> do arquivo (instruções no chat).</span>`;
+    msg.innerHTML = `<span style="color:var(--warn)">A integração com a planilha ainda não foi configurada.</span>`;
+    return;
+  }
+  if(!bipados.length){
+    msg.innerHTML = `<span style="color:var(--warn)">Nada bipado para enviar.</span>`;
     return;
   }
   msg.textContent = 'Enviando para a planilha…';
@@ -1008,16 +980,38 @@ async function exportarPlanilha(){
     total, feitos, faltantes: total-feitos, erros: erros.length,
     linhas: linhasDetalhadas()
   };
+
+  // Estratégia 1: fetch normal (permite LER a resposta do Apps Script e saber
+  // se realmente gravou). O Apps Script devolve CORS liberado quando publicado
+  // como "Qualquer pessoa", então na maioria dos casos isto funciona e confirma.
   try{
-    await fetch(SHEET_ENDPOINT, {
-      method:'POST', mode:'no-cors',
+    const resp = await fetch(SHEET_ENDPOINT, {
+      method:'POST',
       headers:{ 'Content-Type':'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      redirect:'follow'
     });
-    // com no-cors não dá pra ler a resposta; assumimos ok se não deu exceção
-    msg.innerHTML = `<span style="color:var(--ok)">✓ Enviado para a planilha (${bipados.length} linhas).</span>`;
+    const txt = await resp.text();
+    if(txt && txt.indexOf('OK')>=0){
+      msg.innerHTML = `<span style="color:var(--ok)">✓ Enviado e confirmado (${bipados.length} linhas na planilha).</span>`;
+      return;
+    }
+    // respondeu algo diferente de OK → mostra para diagnóstico
+    msg.innerHTML = `<span style="color:var(--warn)">A planilha respondeu: "${esc((txt||'').slice(0,120))}". Verifique o Apps Script.</span>`;
+    return;
   }catch(e){
-    msg.innerHTML = `<span style="color:var(--err)">Falha ao enviar. Confira a conexão e a URL do Apps Script.</span>`;
+    // Estratégia 2 (fallback): no-cors — envia às cegas (não lê resposta).
+    // Útil quando o navegador bloqueia a leitura por CORS, mas o Google grava.
+    try{
+      await fetch(SHEET_ENDPOINT, {
+        method:'POST', mode:'no-cors',
+        headers:{ 'Content-Type':'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+      msg.innerHTML = `<span style="color:var(--ok)">✓ Enviado (${bipados.length} linhas). <span style="color:var(--dim)">Não foi possível confirmar a resposta — confira na planilha.</span></span>`;
+    }catch(e2){
+      msg.innerHTML = `<span style="color:var(--err)">Falha ao enviar. Verifique a conexão e se o Apps Script está publicado como "Qualquer pessoa". <a href="${esc(SHEET_ENDPOINT)}" target="_blank" style="color:var(--accent)">Testar link</a></span>`;
+    }
   }
 }
 
@@ -1028,20 +1022,9 @@ document.querySelectorAll('.mode-btn').forEach(b=>{
     b.classList.add('active');
     modo = b.dataset.mode;
     $('pickLbl').textContent = modo==='processo'?'Escolha o processo':modo==='minuta'?'Escolha a minuta':'Escolha a nota fiscal';
-    const ps=$('pickSearch');
-    if(ps){ ps.value=''; ps.placeholder = modo==='processo'?'🔎 Digite p/ filtrar (nº do processo ou NF)':modo==='minuta'?'🔎 Digite p/ filtrar (nº da minuta ou NF)':'🔎 Digite p/ filtrar (nº da NF)'; }
     preencherOpcoes();
   });
 });
-
-// Busca por digitação: filtra a lista conforme se digita
-if($('pickSearch')){
-  $('pickSearch').addEventListener('input', preencherOpcoes);
-}
-// Ao trocar a seleção no dropdown, atualiza o aviso de NFs sem XML
-if($('pick')){
-  $('pick').addEventListener('change', atualizarAvisoXml);
-}
 
 $('startBtn').addEventListener('click', iniciar);
 $('errOkBtn').addEventListener('click', fecharModalErro);
@@ -1083,6 +1066,7 @@ $('expShareBtn').addEventListener('click', exportarCompartilhar);
 $('expPdfBtn').addEventListener('click', exportarPDF);
 $('expTxtBtn').addEventListener('click', exportarTXT);
 $('expSheetBtn').addEventListener('click', exportarPlanilha);
+$('reimprimirBtn').addEventListener('click', reimprimirFaltantes);
 
 document.querySelectorAll('.tab').forEach(t=>{
   t.addEventListener('click', ()=>{
